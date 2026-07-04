@@ -1,0 +1,12 @@
+# Ruff Configuration
+exclude = [
+    ".git",
+    ".agent",
+    ".agents",
+    "frontend",
+    "node_modules"
+]
+
+[lint]
+select = ["E", "F", "W"]
+ignore = ["E501"]

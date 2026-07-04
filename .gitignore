@@ -1,0 +1,33 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.env.local
+.env.*.local
+venv/
+ENV/
+env/
+
+# Project outputs & logs
+logs/
+output/
+temp-winter-box/
+
+# Node.js
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Editor / OS files
+.DS_Store
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
