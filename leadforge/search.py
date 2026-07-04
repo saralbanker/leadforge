@@ -1,7 +1,7 @@
 import asyncio
 from typing import List
 from playwright.async_api import async_playwright
-from leadforge.config import USER_AGENT, HEADLESS_SCRAPING, PLAYWRIGHT_TIMEOUT
+from leadforge.config import USER_AGENT, HEADLESS_SCRAPING
 from leadforge.utils import get_logger
 
 logger = get_logger()
@@ -22,15 +22,22 @@ async def discover_business_links(city: str, category: str, limit: int = 50) -> 
             headless=HEADLESS_SCRAPING,
             args=["--disable-gpu", "--no-sandbox"]
         )
+        # Load dynamic scraper settings from the repository
+        from leadforge.repositories.settings import SQLiteSettingsRepository
+        settings_repo = SQLiteSettingsRepository()
+        request_timeout = settings_repo.get_int("REQUEST_TIMEOUT", 30)
+        custom_user_agent = settings_repo.get_str("USER_AGENT", USER_AGENT)
+        timeout_ms = request_timeout * 1000
+
         context = await browser.new_context(
-            user_agent=USER_AGENT,
+            user_agent=custom_user_agent,
             viewport={"width": 1280, "height": 800}
         )
         page = await context.new_page()
 
         try:
             logger.info("Navigating to Google Maps search...")
-            await page.goto(search_url, timeout=PLAYWRIGHT_TIMEOUT)
+            await page.goto(search_url, timeout=timeout_ms)
 
             # Wait for search results or feed panel
             try:

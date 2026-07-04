@@ -160,6 +160,8 @@ def bootstrap_legacy_data(conn: sqlite3.Connection):
 
             # Perform insertions
             conn.execute("BEGIN TRANSACTION;")
+            # Collect engine payloads to dispatch after the transaction commits.
+            _engine_payloads = []
 
             # Pre-fetch source and status IDs
             cursor.execute("SELECT id FROM discovery_sources WHERE name = 'MANUAL_IMPORT'")
@@ -201,7 +203,6 @@ def bootstrap_legacy_data(conn: sqlite3.Connection):
                 address = clean_text(row.get("address", ""))
                 area = clean_text(row.get("area", ""))
                 clean_text(row.get("priority", "Medium"))
-                notes = clean_text(row.get("notes", ""))
                 category_name = clean_text(row.get("category", category))
 
                 # Check duplicate by name + phone or address
@@ -259,19 +260,19 @@ def bootstrap_legacy_data(conn: sqlite3.Connection):
                     VALUES (?, ?, ?, ?, ?)
                 """, (uuidv7(), business_id, source_id, status_id, filename))
 
-                # Insert opportunity
-                opp_id = uuidv7()
-                score = 60 if not website else 0
-                cursor.execute("""
-                    INSERT INTO opportunities (id, business_id, title, pipeline_stage, score)
-                    VALUES (?, ?, ?, 'PROSPECTING', ?)
-                """, (opp_id, business_id, f"Digital Transformation - {name}", score))
-
-                # Insert scoring log
-                cursor.execute("""
-                    INSERT INTO opportunity_scoring_logs (id, opportunity_id, rule_name, score_delta, reason)
-                    VALUES (?, ?, 'WEBSITE_CHECK', ?, ?)
-                """, (uuidv7(), opp_id, score, notes))
+                # Collect engine payload for post-commit dispatch.
+                _engine_payloads.append({
+                    "business_id": business_id,
+                    "name": name,
+                    "category": category_name,
+                    "website": website,
+                    "contact_email": "",
+                    "phone": phone,
+                    "rating": None,
+                    "review_count": None,
+                    "business_status": "OPERATIONAL",
+                    "categories": "",
+                })
 
             # Mark file as imported in settings
             cursor.execute("""
@@ -281,6 +282,15 @@ def bootstrap_legacy_data(conn: sqlite3.Connection):
 
             conn.commit()
             logger.info(f"Successfully bootstrap imported {filename} into SQLite.")
+
+            # Engine calls run after commit using separate connections (avoids lock).
+            from leadforge.opportunity_engine import OpportunityIntelligenceEngine
+            for payload in _engine_payloads:
+                try:
+                    OpportunityIntelligenceEngine().generate_for_business(payload)
+                except Exception as eng_err:
+                    logger.warning(f"Opportunity generation failed for {payload.get('name')}: {eng_err}")
+
         except Exception as e:
             conn.rollback()
             logger.error(f"Error import bootstrap for {filename}: {str(e)}")
