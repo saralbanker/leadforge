@@ -6,7 +6,7 @@ from leadforge.database import get_db_connection, uuidv7
 from leadforge.repositories.base import SearchHistoryRepositoryInterface, RepositoryException
 
 class SQLiteSearchHistoryRepository(SearchHistoryRepositoryInterface):
-    def create(self, city: str, category: str, results_count: int, status: str, search_query: Optional[str] = None) -> str:
+    def create(self, city: str, category: str, results_count: int, status: str, search_query: Optional[str] = None, limit_requested: Optional[int] = None, started_at: Optional[str] = None, scraper_version: Optional[str] = "2.0") -> str:
         conn = get_db_connection()
         try:
             cursor = conn.cursor()
@@ -14,9 +14,15 @@ class SQLiteSearchHistoryRepository(SearchHistoryRepositoryInterface):
             if not search_query:
                 search_query = f"{category} in {city}"
 
+            if not started_at:
+                started_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%fZ')
+
             cursor.execute("""
-                INSERT INTO search_history (id, city, category, search_query, results_count, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO search_history (
+                    id, city, category, search_query, results_count, status, created_at,
+                    started_at, limit_requested, scraper_version
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 search_id,
                 city,
@@ -24,13 +30,51 @@ class SQLiteSearchHistoryRepository(SearchHistoryRepositoryInterface):
                 search_query,
                 results_count,
                 status,
-                datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%fZ')
+                started_at,
+                started_at,
+                limit_requested,
+                scraper_version or "1.0"
             ))
             conn.commit()
             return search_id
         except Exception as e:
             conn.rollback()
             raise RepositoryException(f"Failed to log search history for '{category}' in '{city}': {str(e)}")
+        finally:
+            conn.close()
+
+    def complete(self, search_id: str, results_count: int, new_count: int, updated_count: int, failed_count: int, duplicate_count: int, finished_at: str, duration: float, status: str = "COMPLETED", metadata: Optional[str] = None):
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE search_history
+                SET results_count = ?,
+                    new_businesses = ?,
+                    updated_businesses = ?,
+                    failed_businesses = ?,
+                    duplicate_detections = ?,
+                    finished_at = ?,
+                    execution_duration = ?,
+                    status = ?,
+                    scraper_metadata = ?
+                WHERE id = ?
+            """, (
+                results_count,
+                new_count,
+                updated_count,
+                failed_count,
+                duplicate_count,
+                finished_at,
+                duration,
+                status,
+                metadata,
+                search_id
+            ))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise RepositoryException(f"Failed to update search history complete status for search '{search_id}': {str(e)}")
         finally:
             conn.close()
 

@@ -68,8 +68,11 @@ def deduplicate_leads(leads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return unique_leads
 
 
-def clean_text(text: str) -> str:
+def clean_text(text: Any) -> str:
     """Helper to clean extra whitespaces and newline characters."""
-    if not text:
+    if text is None:
         return ""
-    return " ".join(text.split())
+    text_str = str(text)
+    if not text_str.strip() or text_str.lower() == "nan":
+        return ""
+    return " ".join(text_str.split())

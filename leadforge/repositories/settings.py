@@ -41,3 +41,28 @@ class SQLiteSettingsRepository(SettingsRepositoryInterface):
             raise RepositoryException(f"Failed to set settings key '{key}' to '{value}': {str(e)}")
         finally:
             conn.close()
+
+    def get_int(self, key: str, default: int) -> int:
+        """Gets value as integer, falling back to default on conversion error or missing key."""
+        val = self.get(key)
+        if val is None:
+            return default
+        try:
+            return int(val)
+        except ValueError:
+            return default
+
+    def get_float(self, key: str, default: float) -> float:
+        """Gets value as float, falling back to default on conversion error or missing key."""
+        val = self.get(key)
+        if val is None:
+            return default
+        try:
+            return float(val)
+        except ValueError:
+            return default
+
+    def get_str(self, key: str, default: str) -> str:
+        """Gets value as string, falling back to default if missing key."""
+        val = self.get(key)
+        return val if val is not None else default
