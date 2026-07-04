@@ -1,4 +1,3 @@
-import pandas as pd
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -19,6 +18,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.on_event("startup")
+def startup_event():
+    from leadforge.database import initialize_database
+    initialize_database()
 
 # Global in-memory task status
 class ScrapeRequest(BaseModel):
@@ -81,58 +85,43 @@ async def get_logs(lines: int = 50):
 
 @app.get("/api/history")
 async def get_history() -> List[Dict[str, Any]]:
-    """List all previously generated Excel exports."""
-    files = []
-    if not OUTPUT_DIR.exists():
-        return []
-
-    for filepath in OUTPUT_DIR.glob("*.xlsx"):
-        stat = filepath.stat()
-        files.append({
-            "filename": filepath.name,
-            "size_bytes": stat.st_size,
-            "created_at": stat.st_mtime
-        })
-
-    # Sort by created time descending
-    files.sort(key=lambda x: x["created_at"], reverse=True)
-    return files
+    """List all previously generated search runs from SQLite."""
+    from leadforge.repositories.search import SQLiteSearchHistoryRepository
+    repo = SQLiteSearchHistoryRepository()
+    try:
+        return repo.list_all()
+    except Exception as e:
+        logger.error(f"Error querying history: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/leads/{filename}")
 async def get_leads(filename: str):
-    file_path = OUTPUT_DIR / filename
-    if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(status_code=404, detail="File not found.")
+    """Retrieve leads for a campaign/search run from SQLite database."""
+    from leadforge.repositories.lead import SQLiteLeadRepository
+    repo = SQLiteLeadRepository()
     try:
-        df = pd.read_excel(file_path)
-        # Convert NaN to empty string
-        df = df.fillna("")
+        leads = repo.get_leads_by_campaign(filename)
+        if not leads:
+            # Fallback bootstrap if database is empty but spreadsheet exists
+            file_path = OUTPUT_DIR / filename
+            if file_path.exists() and file_path.is_file():
+                from leadforge.database import get_db_connection, bootstrap_legacy_data
+                conn = get_db_connection()
+                try:
+                    bootstrap_legacy_data(conn)
+                finally:
+                    conn.close()
+                leads = repo.get_leads_by_campaign(filename)
 
-        # Mapping nice column names back to code-friendly keys
-        key_mapping = {
-            "Business Name": "name",
-            "Business Category": "category",
-            "Phone Number": "phone",
-            "Website": "website",
-            "Address": "address",
-            "Area": "area",
-            "Priority": "priority",
-            "Notes": "notes",
-            "Discovery Date": "discovery_date"
-        }
+        if not leads:
+            raise HTTPException(status_code=404, detail="Campaign / leads not found.")
 
-        records = df.to_dict(orient="records")
-        mapped_records = []
-        for row in records:
-            mapped_row = {}
-            for col_name, val in row.items():
-                key = key_mapping.get(col_name, col_name.lower())
-                mapped_row[key] = val
-            mapped_records.append(mapped_row)
-
-        return mapped_records
+        return leads
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading Excel: {str(e)}")
+        logger.error(f"Error reading leads campaign: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error reading leads: {str(e)}")
 
 @app.get("/api/download/{filename}")
 async def download_file(filename: str):

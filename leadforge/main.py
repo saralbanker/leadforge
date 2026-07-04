@@ -13,9 +13,19 @@ logger = get_logger()
 
 async def run_pipeline(city: str, category: str, limit: int, output_file: str = None) -> dict:
     """
-    Main lead generation execution pipeline.
+    Main lead generation execution pipeline with SQLite database integration.
     """
+    # 1. Initialize database & run migrations on startup
+    from leadforge.database import initialize_database
+    initialize_database()
+
     start_time = time.time()
+
+    # Construct safe output filename
+    if not output_file:
+        safe_city = "".join([c if c.isalnum() else "_" for c in city])
+        safe_category = "".join([c if c.isalnum() else "_" for c in category])
+        output_file = f"{safe_city}_{safe_category}.xlsx"
 
     logger.info("=" * 60)
     logger.info("⚡ LEADFORGE - BUSINESS DISCOVERY & LEAD GENERATION")
@@ -25,43 +35,72 @@ async def run_pipeline(city: str, category: str, limit: int, output_file: str = 
     logger.info(f"Limit:     {limit}")
     logger.info("-" * 60)
 
-    # Step 1: Discover listing URLs
-    links = await discover_business_links(city, category, limit)
+    try:
+        # Step 1: Discover listing URLs
+        links = await discover_business_links(city, category, limit)
 
-    # Step 2: Collect details from each listing page
-    raw_leads = await collect_business_details(links, category)
+        # Step 2: Collect details from each listing page
+        raw_leads = await collect_business_details(links, category)
 
-    # Step 3: Score and prioritize leads
-    processed_leads = process_and_score_leads(raw_leads)
+        # Step 3: Score and prioritize leads
+        processed_leads = process_and_score_leads(raw_leads)
 
-    # Step 4: Export to Excel
-    if not output_file:
-        safe_city = "".join([c if c.isalnum() else "_" for c in city])
-        safe_category = "".join([c if c.isalnum() else "_" for c in category])
-        output_file = f"{safe_city}_{safe_category}.xlsx"
+        # Step 4: Save to SQLite database via Repository Pattern
+        from leadforge.repositories.lead import SQLiteLeadRepository
+        lead_repo = SQLiteLeadRepository()
+        for lead in processed_leads:
+            lead_repo.save_lead_transaction(lead, output_file)
 
-    export_path = export_leads_to_excel(processed_leads, output_file)
+        # Step 5: Export to Excel (Export utility only)
+        export_path = export_leads_to_excel(processed_leads, output_file)
 
-    duration = time.time() - start_time
+        duration = time.time() - start_time
 
-    # Logging stats (FR-7)
-    logger.info("=" * 60)
-    logger.info("📊 EXECUTION METRICS")
-    logger.info("=" * 60)
-    logger.info(f"Businesses Searched: {len(links)}")
-    logger.info(f"Leads Found:         {len(raw_leads)}")
-    logger.info(f"Unique Leads:        {len(processed_leads)}")
-    logger.info(f"Exported File:       {export_path.name}")
-    logger.info(f"Execution Duration:  {duration:.2f} seconds")
-    logger.info("=" * 60)
+        # Step 6: Log successful search run to search history database
+        from leadforge.repositories.search import SQLiteSearchHistoryRepository
+        search_repo = SQLiteSearchHistoryRepository()
+        search_repo.create(
+            city=city,
+            category=category,
+            results_count=len(processed_leads),
+            status="COMPLETED",
+            search_query=f"{category} in {city}"
+        )
 
-    return {
-        "searched_count": len(links),
-        "found_count": len(raw_leads),
-        "exported_count": len(processed_leads),
-        "duration_sec": duration,
-        "file_name": export_path.name
-    }
+        # Logging stats
+        logger.info("=" * 60)
+        logger.info("📊 EXECUTION METRICS")
+        logger.info("=" * 60)
+        logger.info(f"Businesses Searched: {len(links)}")
+        logger.info(f"Leads Found:         {len(raw_leads)}")
+        logger.info(f"Unique Leads:        {len(processed_leads)}")
+        logger.info(f"Exported File:       {export_path.name}")
+        logger.info(f"Execution Duration:  {duration:.2f} seconds")
+        logger.info("=" * 60)
+
+        return {
+            "searched_count": len(links),
+            "found_count": len(raw_leads),
+            "exported_count": len(processed_leads),
+            "duration_sec": duration,
+            "file_name": export_path.name
+        }
+
+    except Exception as e:
+        # Log failed search query to history database
+        from leadforge.repositories.search import SQLiteSearchHistoryRepository
+        search_repo = SQLiteSearchHistoryRepository()
+        try:
+            search_repo.create(
+                city=city,
+                category=category,
+                results_count=0,
+                status="FAILED",
+                search_query=f"{category} in {city}"
+            )
+        except Exception:
+            pass
+        raise e
 
 def main():
     parser = argparse.ArgumentParser(
