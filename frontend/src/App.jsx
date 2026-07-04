@@ -24,7 +24,7 @@ export default function App() {
   
   // App state
   const [status, setStatus] = useState({
-    is_running: False,
+    is_running: false,
     current_task: null,
     last_result: null,
     error: null
