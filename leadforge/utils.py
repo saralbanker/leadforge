@@ -1,7 +1,8 @@
 import logging
+import re
 import sys
 import time
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from leadforge.config import LOGS_DIR
 
 # Configure Logging
@@ -32,12 +33,14 @@ def get_logger() -> logging.Logger:
 
 def measure_time(func):
     """Decorator to measure execution duration of a function."""
+
     def wrapper(*args, **kwargs):
         start_time = time.time()
         result = func(*args, **kwargs)
         duration = time.time() - start_time
         logger.info(f"Execution of '{func.__name__}' took {duration:.2f} seconds.")
         return result, duration
+
     return wrapper
 
 
@@ -66,6 +69,33 @@ def deduplicate_leads(leads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             unique_leads.append(lead)
 
     return unique_leads
+
+
+# Google Place ID URL patterns, checked in priority order.
+# 1. Hex feature ID embedded in the data blob (…!1s0x…:0x…)
+# 2. Hex feature ID as an explicit ftid query parameter
+# 3. Textual place ID in the data blob (…!19sChIJ…)
+# 4. Textual place ID as query parameter (place_id=ChIJ… / q=place_id:ChIJ…)
+_PLACE_ID_PATTERNS = [
+    re.compile(r"1s(0x[0-9a-fA-F]+:0x[0-9a-fA-F]+)"),
+    re.compile(r"[?&]ftid=(0x[0-9a-fA-F]+:0x[0-9a-fA-F]+)"),
+    re.compile(r"!19s(ChIJ[A-Za-z0-9_-]+)"),
+    re.compile(r"place_id[=:](ChIJ[A-Za-z0-9_-]+)"),
+]
+
+
+def extract_place_id(url: str) -> Optional[str]:
+    """Extract a deterministic Google Place ID from any known Maps URL variant.
+
+    Returns None when the URL carries no recognizable place identifier.
+    """
+    if not url:
+        return None
+    for pattern in _PLACE_ID_PATTERNS:
+        match = pattern.search(url)
+        if match:
+            return match.group(1)
+    return None
 
 
 def clean_text(text: Any) -> str:

@@ -4,19 +4,34 @@ import {
   AlertTriangle, History, FileSpreadsheet, Clock, Search, MapPin,
   Tag, Building2, TrendingUp, Star, ChevronUp, ChevronDown,
   ChevronRight, X, RefreshCw, BarChart3, Zap, Globe, Phone,
-  Mail, Award, Target, Filter
+  Award, Target, Filter, Settings, ChevronLeft, Layers,
+  Activity, ShieldCheck, Info,
 } from 'lucide-react';
 
 const API_BASE = 'http://localhost:8000/api';
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
+// ── CATEGORIES ──────────────────────────────────────────────────────────────────
 
-const priorityClass = (p) => {
-  const s = (p || '').toUpperCase();
-  if (s === 'HIGH' || s === 'High') return 'badge-high';
-  if (s === 'LOW' || s === 'Low') return 'badge-low';
-  return 'badge-medium';
-};
+const CATEGORIES = [
+  'Manufacturers', 'Exporters', 'Wholesalers', 'Retailers', 'Distributors',
+  'Restaurants', 'Hotels', 'Catering Services', 'Bakeries', 'Sweet Shops',
+  'Clinics / Doctors', 'Dental Clinics', 'Hospitals', 'Pharmacies',
+  'Real Estate Agents', 'Construction Companies', 'Interior Designers', 'Architects',
+  'IT Companies', 'Web Design Agencies', 'Digital Marketing Agencies',
+  'CA / Accountants', 'Lawyers', 'Event Planners',
+  'Wedding Photographers', 'Photographers', 'Videographers',
+  'Auto Repair Shops', 'Car Dealers', 'Driving Schools',
+  'Beauty Salons', 'Hair Salons', 'Spas', 'Gyms / Fitness Centers',
+  'Jewelers', 'Clothing Stores', 'Furniture Shops',
+  'Hardware Stores', 'Electrical Shops', 'Plumbers', 'Electricians',
+  'Pest Control Services', 'Packers & Movers', 'Courier Services',
+  'Travel Agencies', 'Schools', 'Coaching Centers', 'Tuition Centers',
+  'Printing Shops', 'Laundries', 'Tailoring Shops', 'Grocery Stores',
+  'Supermarkets', 'Electronics Stores', 'Optical Shops', 'Pet Shops',
+  'Nurseries / Plant Shops', 'Chartered Accountants', 'Insurance Agents',
+];
+
+// ── HELPERS ─────────────────────────────────────────────────────────────────────
 
 const gradeColor = (g) => {
   switch (g) {
@@ -29,6 +44,27 @@ const gradeColor = (g) => {
   }
 };
 
+const priorityColor = (p) => {
+  const s = (p || '').toUpperCase();
+  if (s === 'HIGH') return 'var(--priority-high)';
+  if (s === 'LOW')  return '#6b7280';
+  return 'var(--priority-medium)';
+};
+
+const priorityBg = (p) => {
+  const s = (p || '').toUpperCase();
+  if (s === 'HIGH') return 'var(--priority-high-bg)';
+  if (s === 'LOW')  return 'rgba(107,114,128,0.1)';
+  return 'var(--priority-medium-bg)';
+};
+
+const priorityBorder = (p) => {
+  const s = (p || '').toUpperCase();
+  if (s === 'HIGH') return 'var(--priority-high-border)';
+  if (s === 'LOW')  return 'rgba(107,114,128,0.2)';
+  return 'var(--priority-medium-border)';
+};
+
 const formatDate = (ts) => {
   if (!ts) return '—';
   try {
@@ -37,56 +73,85 @@ const formatDate = (ts) => {
   } catch { return ts; }
 };
 
-const formatSize = (bytes) => {
-  if (!bytes) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+const formatRuntime = (secs) => {
+  if (!secs) return '0s';
+  const s = Math.round(secs);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
 };
+
+const formatPct = (v) => `${((v || 0) * 100).toFixed(1)}%`;
+
+const TERM_LABELS = {
+  REQUESTED_COUNT_REACHED: 'Target reached',
+  SEARCH_SPACE_EXHAUSTED:  'Search space exhausted',
+  SEARCH_BUDGET_EXHAUSTED: 'Search budget exhausted',
+  IN_PROGRESS:             'Running…',
+};
+
+const termLabel = (r) => TERM_LABELS[r] || r || '—';
+
+// ── SHARED COMPONENTS ─────────────────────────────────────────────────────────
 
 const Stars = ({ rating }) => {
   if (rating == null) return <span style={{ color: 'var(--text-muted)' }}>—</span>;
-  const r = parseFloat(rating).toFixed(1);
   return (
-    <span style={{ color: '#f59e0b', fontSize: '0.8rem' }}>
-      <Star size={11} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 2 }} />
-      {r}
+    <span style={{ color: '#f59e0b', fontSize: '0.8rem', display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+      <Star size={11} />
+      {parseFloat(rating).toFixed(1)}
     </span>
   );
 };
 
 const GradeBadge = ({ grade }) => {
   if (!grade) return <span style={{ color: 'var(--text-muted)' }}>—</span>;
+  const c = gradeColor(grade);
   return (
     <span style={{
       display: 'inline-block',
-      background: `${gradeColor(grade)}22`,
-      border: `1px solid ${gradeColor(grade)}55`,
-      color: gradeColor(grade),
-      borderRadius: 4,
-      padding: '1px 6px',
-      fontWeight: 700,
-      fontSize: '0.75rem',
+      background: `${c}22`, border: `1px solid ${c}55`,
+      color: c, borderRadius: 4, padding: '1px 6px', fontWeight: 700, fontSize: '0.75rem',
     }}>{grade}</span>
+  );
+};
+
+const PriorityBadge = ({ priority }) => {
+  const p = (priority || '').toUpperCase();
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 3,
+      background: priorityBg(p), border: `1px solid ${priorityBorder(p)}`,
+      color: priorityColor(p), borderRadius: 4, padding: '2px 7px',
+      fontWeight: 700, fontSize: '0.72rem',
+    }}>
+      <Tag size={10} />{p || '—'}
+    </span>
+  );
+};
+
+const ConfidenceBadge = ({ priority }) => {
+  const p = (priority || '').toUpperCase();
+  const label = p === 'HIGH' ? 'HIGH' : p === 'LOW' ? 'LOW' : 'MED';
+  return (
+    <span style={{
+      display: 'inline-block',
+      background: priorityBg(p), border: `1px solid ${priorityBorder(p)}`,
+      color: priorityColor(p), borderRadius: 4, padding: '2px 7px',
+      fontWeight: 700, fontSize: '0.72rem',
+    }}>{label}</span>
   );
 };
 
 const ScoreBadge = ({ score, priority }) => {
   const p = (priority || '').toUpperCase();
-  const color = p === 'HIGH' ? 'var(--priority-high)' : p === 'LOW' ? '#6b7280' : 'var(--priority-medium)';
-  const bg    = p === 'HIGH' ? 'var(--priority-high-bg)' : p === 'LOW' ? 'rgba(107,114,128,0.1)' : 'var(--priority-medium-bg)';
-  const border = p === 'HIGH' ? 'var(--priority-high-border)' : p === 'LOW' ? 'rgba(107,114,128,0.2)' : 'var(--priority-medium-border)';
   return (
     <span style={{
       display: 'inline-block',
-      background: bg,
-      border: `1px solid ${border}`,
-      color,
-      borderRadius: 4,
-      padding: '2px 6px',
-      fontWeight: 700,
-      fontSize: '0.75rem',
+      background: priorityBg(p), border: `1px solid ${priorityBorder(p)}`,
+      color: priorityColor(p), borderRadius: 4, padding: '2px 6px',
+      fontWeight: 700, fontSize: '0.75rem',
     }}>{score != null ? score.toFixed(1) : '0'}</span>
   );
 };
@@ -118,10 +183,7 @@ const EmptyState = ({ icon: Icon, message, sub }) => (
 const SortHeader = ({ label, col, sortState, onSort }) => {
   const active = sortState.col === col;
   return (
-    <th
-      onClick={() => onSort(col)}
-      style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
-    >
+    <th onClick={() => onSort(col)} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}>
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
         {label}
         {active
@@ -133,50 +195,215 @@ const SortHeader = ({ label, col, sortState, onSort }) => {
   );
 };
 
+const ProgressBar = ({ value, max, label }) => {
+  const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: 4 }}>
+        <span>{label}</span>
+        <span style={{ fontWeight: 600, color: 'var(--color-accent)' }}>{value} / {max}</span>
+      </div>
+      <div className="progress-track">
+        <div className="progress-fill" style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+};
 
-// ── App ─���──────────────────────────────────────────────────────────────────────
+const MetricCard = ({ Icon, value, label, accent }) => (
+  <div className="metric-card">
+    <div className="metric-icon-wrapper" style={accent ? { borderColor: `${accent}33`, color: accent } : {}}>
+      <Icon size={18} />
+    </div>
+    <div className="metric-info">
+      <div className="metric-value" style={accent ? { color: accent } : {}}>{value}</div>
+      <div className="metric-label">{label}</div>
+    </div>
+  </div>
+);
+
+// ── BUSINESS DETAIL DRAWER ────────────────────────────────────────────────────
+
+const BusinessDetailDrawer = ({ biz, detail, loading, onClose }) => {
+  if (!biz) return null;
+  return (
+    <div className="detail-drawer">
+      <div className="detail-drawer-overlay" onClick={onClose} />
+      <div className="detail-drawer-panel">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.5rem' }}>
+          <div>
+            <h2 style={{ fontFamily: 'var(--display-font)', fontWeight: 700, fontSize: '1.15rem' }}>{biz.name}</h2>
+            <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: 2 }}>
+              {biz.category || detail?.category}{biz.area || detail?.area ? ` • ${biz.area || detail?.area}` : ''}
+            </div>
+          </div>
+          <button className="btn-secondary" style={{ padding: '0.4rem' }} onClick={onClose}><X size={16} /></button>
+        </div>
+
+        {loading && <LoadingSpinner label="Loading detail…" />}
+        {!loading && !detail && <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '2rem' }}>Could not load detail.</div>}
+        {!loading && detail && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', overflowY: 'auto', maxHeight: 'calc(100vh - 160px)', paddingRight: 4 }}>
+
+            {/* Business Info */}
+            <div>
+              <div className="detail-section-title">Business Information</div>
+              <div className="detail-row"><Phone size={13} />{detail.phone || '—'}</div>
+              {detail.contact_email && <div className="detail-row"><Globe size={13} />{detail.contact_email}</div>}
+              {detail.website && <div className="detail-row"><Globe size={13} /><a href={detail.website} target="_blank" rel="noreferrer" style={{ color: 'var(--color-accent)' }}>{detail.website}</a></div>}
+              {detail.address && <div className="detail-row"><MapPin size={13} />{detail.address}{detail.city ? `, ${detail.city}` : ''}</div>}
+              <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                <Stars rating={detail.rating} />
+                {detail.review_count != null && <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{detail.review_count} reviews</span>}
+                {detail.business_status && (
+                  <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.05)', borderRadius: 4, padding: '1px 6px' }}>
+                    {detail.business_status}
+                  </span>
+                )}
+              </div>
+              {detail.opening_hours && (
+                <div style={{ marginTop: '0.5rem', fontSize: '0.78rem', color: 'var(--text-secondary)', background: 'rgba(19,25,38,0.4)', borderRadius: 6, padding: '0.5rem 0.75rem' }}>
+                  <Clock size={11} style={{ marginRight: 4, display: 'inline', verticalAlign: 'middle' }} />
+                  {detail.opening_hours}
+                </div>
+              )}
+            </div>
+
+            {/* Confidence Breakdown */}
+            {detail.opportunities?.length > 0 && (
+              <div>
+                <div className="detail-section-title">Confidence Breakdown</div>
+                {detail.opportunities.map((opp, i) => {
+                  const score = opp.score || 0;
+                  const p = score >= 60 ? 'HIGH' : score >= 28 ? 'MEDIUM' : 'LOW';
+                  return (
+                    <div key={i} style={{ background: 'rgba(19,25,38,0.4)', border: '1px solid var(--border-color)', borderRadius: 8, padding: '0.75rem', marginBottom: '0.6rem' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                        <span style={{ fontWeight: 600, fontSize: '0.82rem' }}>{opp.title?.split(' — ')[0] || opp.pipeline_stage || '—'}</span>
+                        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                          <ConfidenceBadge priority={p} />
+                          <span style={{ fontSize: '0.75rem', color: 'var(--color-accent)', fontWeight: 700 }}>{score.toFixed(1)}</span>
+                        </div>
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', gap: '1rem' }}>
+                        <span>{(opp.close_probability * 100).toFixed(0)}% close prob.</span>
+                        <span>₹{Number(opp.estimated_value).toLocaleString()} est.</span>
+                      </div>
+                      {opp.signals?.length > 0 && (
+                        <div style={{ marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: 3 }}>
+                          {opp.signals.slice(0, 5).map((sig, j) => (
+                            <div key={j} style={{ fontSize: '0.73rem', display: 'flex', justifyContent: 'space-between' }}>
+                              <span style={{ color: 'var(--text-secondary)' }}>{sig.rule_name}</span>
+                              <span style={{ color: sig.score_delta > 0 ? '#10b981' : '#ef4444', fontWeight: 600 }}>
+                                {sig.score_delta > 0 ? '+' : ''}{sig.score_delta.toFixed(1)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Digital Maturity */}
+            {detail.maturity && (
+              <div>
+                <div className="detail-section-title">Digital Maturity</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                  <GradeBadge grade={detail.maturity.grade} />
+                  <div style={{ flexGrow: 1, background: 'var(--border-color)', borderRadius: 4, height: 5, overflow: 'hidden' }}>
+                    <div style={{ width: `${detail.maturity.score || 0}%`, height: '100%', background: gradeColor(detail.maturity.grade), borderRadius: 4 }} />
+                  </div>
+                  <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{(detail.maturity.score || 0).toFixed(0)}/100</span>
+                </div>
+                {detail.maturity.dimensions?.map((dim, i) => (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.3rem 0', borderBottom: '1px solid var(--border-color)', fontSize: '0.78rem' }}>
+                    <span style={{ color: dim.gap ? '#f97316' : '#10b981' }}>
+                      {dim.gap ? '✗' : '✓'} {dim.name}
+                    </span>
+                    <span style={{ color: 'var(--text-muted)' }}>{dim.score?.toFixed(0)}/{dim.max_score?.toFixed(0)}</span>
+                  </div>
+                ))}
+                {detail.maturity.gaps?.length > 0 && (
+                  <div style={{ marginTop: '0.5rem' }}>
+                    <div style={{ fontSize: '0.72rem', color: '#f97316', fontWeight: 600, marginBottom: 2 }}>Gaps:</div>
+                    {detail.maturity.gaps.map((g, i) => (
+                      <div key={i} style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', paddingLeft: 8 }}>• {g}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Discovery */}
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', paddingTop: '0.5rem', borderTop: '1px solid var(--border-color)' }}>
+              <div>Discovery Date: {formatDate(detail.first_discovered_at)}</div>
+              <div style={{ marginTop: 2 }}>Last Seen: {formatDate(detail.last_scraped_at)}</div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ── APP ─────────────────────────────────────────────────────────────────────────
 
 export default function App() {
   // Navigation
-  const [activeTab, setActiveTab] = useState('discover');
+  const [activeTab, setActiveTab] = useState('campaign');
 
-  // ── Discover tab
-  const [city, setCity] = useState('Ahmedabad');
+  // Campaign tab
+  const [location, setLocation] = useState('Ahmedabad');
   const [category, setCategory] = useState('Manufacturers');
-  const [limit, setLimit] = useState(10);
-  const [noWebsiteOnly, setNoWebsiteOnly] = useState(false);
+  const [targetLeads, setTargetLeads] = useState(10);
   const [status, setStatus] = useState({ is_running: false, current_task: null, last_result: null, error: null });
+  const [metrics, setMetrics] = useState(null);
   const [logs, setLogs] = useState([]);
-  const consoleRef = useRef(null);
-
-  // ── Leads tab
   const [history, setHistory] = useState([]);
+  const consoleRef = useRef(null);
+  const wasRunningRef = useRef(false);
+
+  // Qualified Leads tab
   const [leads, setLeads] = useState([]);
   const [selectedCampaign, setSelectedCampaign] = useState('');
   const [leadsSearch, setLeadsSearch] = useState('');
   const [leadsSort, setLeadsSort] = useState({ col: 'score', dir: 'desc' });
   const [loadingLeads, setLoadingLeads] = useState(false);
   const [errorLeads, setErrorLeads] = useState(null);
+  const [selectedLeadBiz, setSelectedLeadBiz] = useState(null);
+  const [leadBizDetail, setLeadBizDetail] = useState(null);
+  const [loadingLeadDetail, setLoadingLeadDetail] = useState(false);
 
-  // ── Opportunities tab
+  // Opportunities tab
   const [opps, setOpps] = useState([]);
-  const [oppsSearch, setOppsSearch] = useState('');
-  const [oppsPriorityFilter, setOppsPriorityFilter] = useState('');
   const [loadingOpps, setLoadingOpps] = useState(false);
   const [errorOpps, setErrorOpps] = useState(null);
+  const [selectedService, setSelectedService] = useState(null);
+  const [oppDetail, setOppDetail] = useState({});
   const [expandedOpp, setExpandedOpp] = useState(null);
-  const [oppDetail, setOppDetail] = useState({});  // id → detail
 
-  // ── Businesses tab
+  // Business Registry tab
   const [businesses, setBusinesses] = useState([]);
   const [bizSearch, setBizSearch] = useState('');
-  const [bizGrade, setBizGrade] = useState('');
   const [bizSort, setBizSort] = useState({ col: 'score', dir: 'desc' });
   const [loadingBiz, setLoadingBiz] = useState(false);
   const [errorBiz, setErrorBiz] = useState(null);
   const [selectedBiz, setSelectedBiz] = useState(null);
   const [bizDetail, setBizDetail] = useState(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+
+  // Analytics tab
+  const [analytics, setAnalytics] = useState(null);
+  const [loadingAnalytics, setLoadingAnalytics] = useState(false);
+
+  // Settings tab
+  const [settingsData, setSettingsData] = useState({});
+  const [loadingSettings, setLoadingSettings] = useState(false);
+  const [editedSettings, setEditedSettings] = useState({});
+  const [savingKey, setSavingKey] = useState(null);
 
   // ── Data fetching ──────────────────────────────────────────────────────────
 
@@ -187,9 +414,16 @@ export default function App() {
     } catch { /* ignore */ }
   }, []);
 
+  const fetchMetrics = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/metrics`);
+      setMetrics(await res.json());
+    } catch { /* ignore */ }
+  }, []);
+
   const fetchLogs = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/logs?lines=60`);
+      const res = await fetch(`${API_BASE}/logs?lines=80`);
       const data = await res.json();
       if (data.logs) setLogs(data.logs);
     } catch { /* ignore */ }
@@ -222,7 +456,7 @@ export default function App() {
     setLoadingOpps(true);
     setErrorOpps(null);
     try {
-      const res = await fetch(`${API_BASE}/opportunities?limit=300`);
+      const res = await fetch(`${API_BASE}/opportunities?limit=500`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setOpps(await res.json());
     } catch (e) {
@@ -238,7 +472,6 @@ export default function App() {
     try {
       const params = new URLSearchParams({ limit: 300, sort_by: bizSort.col, sort_dir: bizSort.dir });
       if (bizSearch) params.set('search', bizSearch);
-      if (bizGrade) params.set('maturity_grade', bizGrade);
       const res = await fetch(`${API_BASE}/businesses?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setBusinesses(await res.json());
@@ -247,7 +480,7 @@ export default function App() {
     } finally {
       setLoadingBiz(false);
     }
-  }, [bizSearch, bizGrade, bizSort]);
+  }, [bizSearch, bizSort]);
 
   const fetchBizDetail = useCallback(async (id) => {
     setLoadingDetail(true);
@@ -262,6 +495,20 @@ export default function App() {
     }
   }, []);
 
+  const fetchLeadBizDetail = useCallback(async (bizId) => {
+    setLoadingLeadDetail(true);
+    setLeadBizDetail(null);
+    try {
+      const res = await fetch(`${API_BASE}/businesses/${bizId}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setLeadBizDetail(await res.json());
+    } catch {
+      setLeadBizDetail(null);
+    } finally {
+      setLoadingLeadDetail(false);
+    }
+  }, []);
+
   const fetchOppDetail = useCallback(async (id) => {
     if (oppDetail[id]) return;
     try {
@@ -272,24 +519,78 @@ export default function App() {
     } catch { /* ignore */ }
   }, [oppDetail]);
 
+  const fetchAnalytics = useCallback(async () => {
+    setLoadingAnalytics(true);
+    try {
+      const res = await fetch(`${API_BASE}/analytics`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setAnalytics(await res.json());
+    } catch { /* ignore */ } finally {
+      setLoadingAnalytics(false);
+    }
+  }, []);
+
+  const fetchSettings = useCallback(async () => {
+    setLoadingSettings(true);
+    try {
+      const res = await fetch(`${API_BASE}/settings`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setSettingsData(data);
+      const init = {};
+      Object.entries(data).forEach(([k, v]) => { init[k] = v.value; });
+      setEditedSettings(init);
+    } catch { /* ignore */ } finally {
+      setLoadingSettings(false);
+    }
+  }, []);
+
+  const saveSetting = async (key) => {
+    setSavingKey(key);
+    try {
+      await fetch(`${API_BASE}/settings/${encodeURIComponent(key)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: editedSettings[key] }),
+      });
+      setSettingsData(prev => ({ ...prev, [key]: { ...prev[key], value: editedSettings[key] } }));
+    } catch { /* ignore */ } finally {
+      setSavingKey(null);
+    }
+  };
+
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
   useEffect(() => {
     fetchHistory();
     fetchStatus();
+    fetchMetrics();
     fetchLogs();
-    const iv = setInterval(() => { fetchStatus(); fetchLogs(); }, 2000);
+    const iv = setInterval(() => {
+      fetchStatus();
+      fetchMetrics();
+      fetchLogs();
+    }, 2000);
     return () => clearInterval(iv);
-  }, [fetchHistory, fetchStatus, fetchLogs]);
+  }, [fetchHistory, fetchStatus, fetchMetrics, fetchLogs]);
 
   useEffect(() => {
-    if (status.last_result?.file_name && selectedCampaign !== status.last_result.file_name) {
-      const fn = status.last_result.file_name;
-      setSelectedCampaign(fn);
-      fetchLeads(fn);
-      fetchHistory();
+    const isRunning = status.is_running;
+    const wasRunning = wasRunningRef.current;
+    wasRunningRef.current = isRunning;
+
+    const fn = status.last_result?.file_name;
+    if (fn && !isRunning) {
+      const justFinished = wasRunning && !isRunning;
+      if (!selectedCampaign || justFinished) {
+        if (selectedCampaign !== fn) {
+          setSelectedCampaign(fn);
+          fetchLeads(fn);
+          fetchHistory();
+        }
+      }
     }
-  }, [status.last_result]);
+  }, [status.is_running, status.last_result, selectedCampaign, fetchLeads, fetchHistory]);
 
   useEffect(() => {
     if (consoleRef.current) consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
@@ -297,15 +598,17 @@ export default function App() {
 
   useEffect(() => {
     if (activeTab === 'opportunities') fetchOpps();
-    if (activeTab === 'businesses') fetchBiz();
-  }, [activeTab]);
+    if (activeTab === 'businesses')    fetchBiz();
+    if (activeTab === 'analytics')     fetchAnalytics();
+    if (activeTab === 'settings')      fetchSettings();
+  }, [activeTab, fetchOpps, fetchBiz, fetchAnalytics, fetchSettings]);
 
-  // ── Sorted/filtered derived lists ─────────────────────────────────────────
+  // ── Derived data ──────────────────────────────────────────────────────────
 
   const filteredLeads = leads
     .filter(l => {
       const q = leadsSearch.toLowerCase();
-      return !q || [l.name, l.phone, l.website, l.area, l.category]
+      return !q || [l.name, l.phone, l.area, l.category, l.top_opportunity]
         .some(v => (v || '').toLowerCase().includes(q));
     })
     .sort((a, b) => {
@@ -316,21 +619,11 @@ export default function App() {
       return dir === 'asc' ? cmp : -cmp;
     });
 
-  const filteredOpps = opps.filter(o => {
-    const q = oppsSearch.toLowerCase();
-    const matchText = !q || (o.business_name || '').toLowerCase().includes(q)
-      || (o.title || '').toLowerCase().includes(q);
-    const matchPriority = !oppsPriorityFilter || (o.priority || '') === oppsPriorityFilter;
-    return matchText && matchPriority;
-  });
-
-  const toggleLeadsSort = (col) => {
+  const toggleLeadsSort = (col) =>
     setLeadsSort(prev => ({ col, dir: prev.col === col && prev.dir === 'desc' ? 'asc' : 'desc' }));
-  };
 
   const toggleBizSort = (col) => {
     setBizSort(prev => ({ col, dir: prev.col === col && prev.dir === 'desc' ? 'asc' : 'desc' }));
-    fetchBiz();
   };
 
   const toggleOpp = (id) => {
@@ -339,25 +632,92 @@ export default function App() {
     fetchOppDetail(id);
   };
 
-  const openBizDetail = (biz) => {
-    setSelectedBiz(biz);
-    setBizDetail(null);
-    fetchBizDetail(biz.id);
+  // Group opportunities by service name extracted from title "Service — Business"
+  const oppsByService = opps.reduce((acc, opp) => {
+    const svc = (opp.title || '').split(' — ')[0].trim() || opp.pipeline_stage || 'Other';
+    if (!acc[svc]) acc[svc] = [];
+    acc[svc].push(opp);
+    return acc;
+  }, {});
+
+  // Rejection telemetry from last result or live metrics
+  const getRejectionData = () => {
+    if (status.is_running && metrics) {
+      const tier1 = metrics.tier1_rejections || {};
+      const prog = metrics.progress || {};
+      return {
+        'No Phone':       tier1.NO_PHONE || 0,
+        'Has Website':    tier1.HAS_WEBSITE || 0,
+        'Closed':         tier1.CLOSED || 0,
+        'No Name':        tier1.NO_NAME || 0,
+        'Duplicate':      prog.duplicates || 0,
+        'Wrong Category': 0,
+        'Wrong City':     0,
+        'Ghost Listing':  0,
+      };
+    }
+    const lr = status.last_result;
+    if (!lr) return null;
+    return {
+      'No Phone':        lr.no_phone_count || 0,
+      'Has Website':     lr.has_website_count || 0,
+      'Wrong Category':  lr.wrong_category_count || 0,
+      'Wrong City':      lr.wrong_city_count || 0,
+      'Ghost Listing':   lr.ghost_listing_count || 0,
+      'Closed':          lr.permanently_closed_count || 0,
+      'Duplicate':       lr.duplicate_count || 0,
+      'Unverified Cat.': lr.category_unverified_count || 0,
+    };
   };
 
-  // ── Scraper ────────────────────────────────────────────────────────────────
+  // Live campaign numbers (while running or from last result)
+  const getCampaignNumbers = () => {
+    if (status.is_running && metrics?.progress) {
+      const p = metrics.progress;
+      return {
+        qualified: p.qualified || 0,
+        requested: p.requested || targetLeads,
+        visited:   p.visited || 0,
+        rejected:  p.rejected || 0,
+        duplicates: p.duplicates || 0,
+        runtime:   metrics.elapsed_sec || 0,
+        termination: metrics.active_termination_condition || 'IN_PROGRESS',
+        yieldRate: metrics.yield_rate || 0,
+        avgConfidence: metrics.avg_confidence || 0,
+        isLive: true,
+      };
+    }
+    const lr = status.last_result;
+    if (lr) {
+      return {
+        qualified: lr.qualified_count || 0,
+        requested: lr.requested_count || 0,
+        visited:   lr.searched_count || 0,
+        rejected:  lr.rejected_count || 0,
+        duplicates: lr.duplicate_count || 0,
+        runtime:   lr.duration_sec || 0,
+        termination: lr.termination_reason || '',
+        yieldRate: lr.searched_count > 0 ? (lr.qualified_count / lr.searched_count) : 0,
+        avgConfidence: lr.avg_confidence || 0,
+        isLive: false,
+      };
+    }
+    return null;
+  };
 
-  const handleStartScrape = async (e) => {
+  // ── Campaign launch ────────────────────────────────────────────────────────
+
+  const handleLaunchCampaign = async (e) => {
     e.preventDefault();
     if (status.is_running) return;
     try {
       const res = await fetch(`${API_BASE}/scrape`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ city, category, limit: Number(limit), no_website_only: noWebsiteOnly }),
+        body: JSON.stringify({ city: location, category, limit: Number(targetLeads), no_website_only: true }),
       });
       if (res.ok) {
-        setLeads([]); setSelectedCampaign(''); fetchStatus();
+        setLeads([]); setSelectedCampaign(''); fetchStatus(); fetchMetrics();
       } else {
         const d = await res.json();
         alert(`Failed to start: ${d.detail}`);
@@ -367,7 +727,7 @@ export default function App() {
     }
   };
 
-  // ── Export helper ──────────────────────────────────────────────────────────
+  // ── Export ─────────────────────────────────────────────────────────────────
 
   const handleExport = async (mode, campaignName) => {
     try {
@@ -387,233 +747,251 @@ export default function App() {
     } catch { alert('Export failed.'); }
   };
 
+  // ── TAB: Campaign ──────────────────────────────────────────────────────────
 
-  // ── Render: Tab bar ────��───────────────────────────────────────────────────
+  const renderCampaign = () => {
+    const nums = getCampaignNumbers();
+    const rejections = getRejectionData();
+    const isRunning = status.is_running;
 
-  const tabs = [
-    { id: 'discover',      label: 'Discover',      Icon: Play },
-    { id: 'leads',         label: 'Leads',          Icon: FileSpreadsheet },
-    { id: 'opportunities', label: 'Opportunities',  Icon: TrendingUp },
-    { id: 'businesses',    label: 'Businesses',     Icon: Building2 },
-  ];
-
-  // ── Render: Discover tab ────���──────────────────────────────────────────────
-
-  const CATEGORIES = [
-    'Manufacturers', 'Exporters', 'Wholesalers', 'Retailers', 'Distributors',
-    'Restaurants', 'Hotels', 'Catering Services', 'Bakeries', 'Sweet Shops',
-    'Clinics / Doctors', 'Dental Clinics', 'Hospitals', 'Pharmacies',
-    'Real Estate Agents', 'Construction Companies', 'Interior Designers', 'Architects',
-    'IT Companies', 'Web Design Agencies', 'Digital Marketing Agencies',
-    'CA / Accountants', 'Lawyers', 'Event Planners',
-    'Wedding Photographers', 'Photographers', 'Videographers',
-    'Auto Repair Shops', 'Car Dealers', 'Driving Schools',
-    'Beauty Salons', 'Hair Salons', 'Spas', 'Gyms / Fitness Centers',
-    'Jewelers', 'Clothing Stores', 'Furniture Shops',
-    'Hardware Stores', 'Electrical Shops', 'Plumbers', 'Electricians',
-    'Pest Control Services', 'Packers & Movers', 'Courier Services',
-    'Travel Agencies', 'Schools', 'Coaching Centers', 'Tuition Centers',
-    'Printing Shops', 'Laundries', 'Tailoring Shops', 'Grocery Stores',
-    'Supermarkets', 'Electronics Stores', 'Optical Shops', 'Pet Shops',
-    'Nurseries / Plant Shops', 'Chartered Accountants', 'Insurance Agents',
-  ];
-
-  const renderDiscover = () => (
-    <div className="dashboard-grid">
-      {/* Left: form + terminal */}
-      <section style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-        <div className="panel">
-          <h2 className="panel-title"><Play size={18} color="var(--color-accent)" /> Discovery Parameters</h2>
-          <form onSubmit={handleStartScrape}>
-            <div className="form-group">
-              <label className="form-label">City</label>
-              <input type="text" className="form-input" value={city} onChange={e => setCity(e.target.value)} disabled={status.is_running} required />
-            </div>
-            <div className="form-group">
-              <label className="form-label">Business Category</label>
-              <input
-                type="text"
-                className="form-input"
-                list="category-list"
-                value={category}
-                onChange={e => setCategory(e.target.value)}
-                disabled={status.is_running}
-                placeholder="Type or select…"
-                required
-              />
-              <datalist id="category-list">
-                {CATEGORIES.map(c => <option key={c} value={c} />)}
-              </datalist>
-            </div>
-            <div className="form-group">
-              <label className="form-label">Target Lead Count</label>
-              <input type="number" className="form-input" value={limit} onChange={e => setLimit(e.target.value)} disabled={status.is_running} min="1" max="300" required />
-            </div>
-
-            {/* No-website toggle */}
-            <div className="form-group" style={{ marginBottom: '1.25rem' }}>
-              <div
-                onClick={() => !status.is_running && setNoWebsiteOnly(v => !v)}
-                style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                  padding: '0.75rem 1rem',
-                  background: noWebsiteOnly ? 'rgba(20,184,166,0.08)' : 'rgba(19,25,38,0.4)',
-                  border: `1px solid ${noWebsiteOnly ? 'rgba(20,184,166,0.35)' : 'var(--border-color)'}`,
-                  borderRadius: 8,
-                  cursor: status.is_running ? 'not-allowed' : 'pointer',
-                  transition: 'all 0.2s',
-                  opacity: status.is_running ? 0.5 : 1,
-                }}
-              >
-                <div>
-                  <div style={{ fontSize: '0.875rem', fontWeight: 600, color: noWebsiteOnly ? 'var(--color-accent)' : 'var(--text-primary)' }}>
-                    No-Website Leads Only
-                  </div>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 2 }}>
-                    {noWebsiteOnly
-                      ? `Will fetch up to ${limit * 3} raw, keep first ${limit} without a website`
-                      : 'Include all businesses regardless of website status'}
-                  </div>
-                </div>
-                <div style={{
-                  width: 40, height: 22, borderRadius: 11, position: 'relative',
-                  background: noWebsiteOnly ? 'var(--color-accent)' : 'rgba(255,255,255,0.1)',
-                  border: `1px solid ${noWebsiteOnly ? 'var(--color-accent)' : 'var(--border-color)'}`,
-                  transition: 'background 0.2s',
-                  flexShrink: 0,
-                }}>
-                  <div style={{
-                    position: 'absolute', top: 2, left: noWebsiteOnly ? 20 : 2,
-                    width: 16, height: 16, borderRadius: '50%',
-                    background: noWebsiteOnly ? '#fff' : 'var(--text-muted)',
-                    transition: 'left 0.2s',
-                  }} />
-                </div>
+    return (
+      <div className="dashboard-grid">
+        {/* Left column: form + history */}
+        <section style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+          <div className="panel">
+            <h2 className="panel-title"><Play size={16} color="var(--color-accent)" /> Campaign Configuration</h2>
+            <form onSubmit={handleLaunchCampaign}>
+              <div className="form-group">
+                <label className="form-label">Location</label>
+                <input type="text" className="form-input" value={location}
+                  onChange={e => setLocation(e.target.value)} disabled={isRunning} required
+                  placeholder="City, area, or region…" />
               </div>
-            </div>
-
-            <button type="submit" className={`btn-primary ${status.is_running ? '' : 'pulse-button'}`} disabled={status.is_running}>
-              {status.is_running ? 'Scraping…' : 'Launch LeadForge'}
-            </button>
-          </form>
-        </div>
-
-        <div className="panel" style={{ flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
-          <h2 className="panel-title"><TerminalIcon size={18} color="var(--color-accent)" /> Terminal Feed</h2>
-          <div className="console-monitor" ref={consoleRef} style={{ flexGrow: 1 }}>
-            {logs.length === 0
-              ? <div style={{ color: 'var(--text-muted)' }}>Waiting for process run…</div>
-              : logs.map((log, i) => {
-                  let cls = 'console-line';
-                  if (log.includes('[ERROR]') || log.includes('failed')) cls += ' console-line-error';
-                  else if (log.includes('[WARNING]')) cls += ' console-line-warn';
-                  return <div key={i} className={cls}>{log}</div>;
-                })
-            }
+              <div className="form-group">
+                <label className="form-label">Business Category</label>
+                <input type="text" className="form-input" list="category-list"
+                  value={category} onChange={e => setCategory(e.target.value)}
+                  disabled={isRunning} placeholder="Type or select…" required />
+                <datalist id="category-list">
+                  {CATEGORIES.map(c => <option key={c} value={c} />)}
+                </datalist>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Target Qualified Leads</label>
+                <input type="number" className="form-input" value={targetLeads}
+                  onChange={e => setTargetLeads(e.target.value)}
+                  disabled={isRunning} min="1" max="300" required />
+              </div>
+              <button type="submit" className={`btn-primary ${isRunning ? '' : 'pulse-button'}`} disabled={isRunning}>
+                <Play size={16} />
+                {isRunning ? `Running… ${status.current_task ? `(${status.current_task})` : ''}` : 'Launch Campaign'}
+              </button>
+            </form>
+            {status.error && (
+              <div style={{ marginTop: '0.75rem', color: '#f87171', display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.82rem' }}>
+                <AlertTriangle size={14} /> {status.error}
+              </div>
+            )}
           </div>
-          {status.is_running && (
-            <div style={{ marginTop: '0.75rem', fontSize: '0.85rem', color: 'var(--color-accent)' }}>
-              Current: {status.current_task}
-            </div>
-          )}
-          {status.error && (
-            <div style={{ marginTop: '0.75rem', color: '#f87171', display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.85rem' }}>
-              <AlertTriangle size={16} /> {status.error}
-            </div>
-          )}
-        </div>
-      </section>
 
-      {/* Right: metrics + last run summary */}
-      <section style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-        <div className="metrics-row">
-          {[
-            { Icon: Search,       val: status.last_result?.searched_count || 0,    label: 'Businesses Checked' },
-            { Icon: Database,     val: status.last_result?.found_count    || 0,    label: 'Raw Listings' },
-            { Icon: CheckCircle2, val: status.last_result?.new_count      || 0,    label: 'New Leads' },
-            { Icon: Clock,        val: status.last_result?.duration_sec   ? `${status.last_result.duration_sec.toFixed(1)}s` : '0s', label: 'Time Elapsed' },
-          ].map(({ Icon, val, label }) => (
-            <div key={label} className="metric-card">
-              <div className="metric-icon-wrapper"><Icon size={20} /></div>
-              <div className="metric-info">
-                <div className="metric-value">{val}</div>
-                <div className="metric-label">{label}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* Search history */}
-        <div className="panel">
-          <h2 className="panel-title"><History size={18} color="var(--color-accent)" /> Search History</h2>
-          <div style={{ maxHeight: '240px', overflowY: 'auto' }}>
-            {history.length === 0
-              ? <div style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>No past searches found.</div>
-              : history.map((run, i) => (
-                <div key={i} className="history-item"
-                  style={{ borderColor: selectedCampaign === run.filename ? 'var(--color-accent)' : 'var(--border-color)', cursor: 'pointer' }}
-                  onClick={() => { setSelectedCampaign(run.filename); fetchLeads(run.filename); setActiveTab('leads'); }}
-                >
-                  <div className="history-details">
-                    <div className="history-name">{run.city} — {run.category}</div>
-                    <div className="history-meta">
-                      {run.status} • {formatSize(run.size_bytes)} • {formatDate(run.created_at)}
+          {/* Campaign History */}
+          <div className="panel">
+            <h2 className="panel-title"><History size={16} color="var(--color-accent)" /> Recent Campaigns</h2>
+            <div style={{ maxHeight: 280, overflowY: 'auto' }}>
+              {history.length === 0
+                ? <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>No campaigns yet.</div>
+                : history.slice(0, 12).map((run, i) => (
+                  <div key={i} className="history-item"
+                    style={{ borderColor: selectedCampaign === run.filename ? 'var(--color-accent)' : 'var(--border-color)', cursor: 'pointer' }}
+                    onClick={() => { setSelectedCampaign(run.filename); fetchLeads(run.filename); setActiveTab('qualified-leads'); }}>
+                    <div className="history-details">
+                      <div className="history-name"><MapPin size={11} style={{ display: 'inline', marginRight: 3, color: 'var(--text-muted)' }} />{run.city} — {run.category}</div>
+                      <div className="history-meta">{run.status} · {formatDate(run.created_at)}</div>
                     </div>
+                    <ChevronRight size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
                   </div>
-                  <button className="btn-secondary" style={{ padding: '0.35rem 0.65rem' }}
-                    onClick={e => { e.stopPropagation(); window.open(`${API_BASE}/download/${run.filename}`); }}>
-                    <Download size={14} />
-                  </button>
+                ))
+              }
+            </div>
+          </div>
+
+          {/* Developer link */}
+          <div className="panel" style={{ padding: '0.85rem 1.25rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+                <TerminalIcon size={13} />
+                <span>Runtime logs are in the Developer tab.</span>
+              </div>
+              <button className="btn-secondary" style={{ fontSize: '0.78rem' }} onClick={() => setActiveTab('developer')}>
+                View Logs
+              </button>
+            </div>
+          </div>
+        </section>
+
+        {/* Right column: live dashboard */}
+        <section style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+          {/* Campaign Status */}
+          <div className="panel">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem' }}>
+              <h2 style={{ fontFamily: 'var(--display-font)', fontWeight: 600, fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Activity size={16} color="var(--color-accent)" /> Campaign Dashboard
+              </h2>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                {isRunning ? (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--color-accent)', fontSize: '0.8rem', fontWeight: 600 }}>
+                    <span className="pulse-button" style={{ display: 'inline-block', width: 7, height: 7, background: 'var(--color-accent)', borderRadius: '50%' }} />
+                    RUNNING
+                  </span>
+                ) : nums ? (
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border-color)', borderRadius: 4, padding: '2px 8px' }}>
+                    COMPLETED
+                  </span>
+                ) : (
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>IDLE</span>
+                )}
+              </div>
+            </div>
+
+            {!nums ? (
+              <EmptyState icon={Play} message="No campaign data" sub="Configure and launch a campaign to see live progress." />
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                {/* Progress bar */}
+                <ProgressBar value={nums.qualified} max={nums.requested} label="Qualified Progress" />
+
+                {/* Metric cards */}
+                <div className="metrics-row" style={{ marginBottom: 0 }}>
+                  <MetricCard Icon={Target}      value={nums.requested}          label="Requested" />
+                  <MetricCard Icon={CheckCircle2} value={nums.qualified}         label="Qualified" accent="var(--color-accent)" />
+                  <MetricCard Icon={AlertTriangle} value={nums.rejected}         label="Rejected" />
+                  <MetricCard Icon={Database}     value={Math.max(0, nums.requested - nums.qualified)} label="Remaining" />
+                  <MetricCard Icon={Clock}        value={formatRuntime(nums.runtime)} label="Runtime" />
+                  <MetricCard Icon={Search}       value={nums.visited}           label="Visited" />
                 </div>
-              ))
-            }
-          </div>
-        </div>
 
-        {/* Quick links to other tabs */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-          <button className="btn-secondary" style={{ padding: '1rem', flexDirection: 'column', gap: '0.35rem' }}
-            onClick={() => { fetchOpps(); setActiveTab('opportunities'); }}>
-            <TrendingUp size={20} color="var(--color-accent)" />
-            <span>View Opportunities</span>
-          </button>
-          <button className="btn-secondary" style={{ padding: '1rem', flexDirection: 'column', gap: '0.35rem' }}
-            onClick={() => { fetchBiz(); setActiveTab('businesses'); }}>
-            <Building2 size={20} color="var(--color-accent)" />
-            <span>Browse Businesses</span>
-          </button>
-        </div>
-      </section>
-    </div>
-  );
+                {/* Secondary stats */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.75rem' }}>
+                  {[
+                    { label: 'Qualification Yield', value: formatPct(nums.yieldRate) },
+                    { label: 'Avg Confidence',      value: formatPct(nums.avgConfidence) },
+                    { label: 'Duplicates Skipped',  value: nums.duplicates },
+                  ].map(({ label, value }) => (
+                    <div key={label} style={{ background: 'rgba(19,25,38,0.5)', border: '1px solid var(--border-color)', borderRadius: 8, padding: '0.6rem 0.75rem', textAlign: 'center' }}>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 700, fontFamily: 'var(--display-font)', color: 'var(--text-primary)' }}>{value}</div>
+                      <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: 2 }}>{label}</div>
+                    </div>
+                  ))}
+                </div>
 
-  // ── Render: Leads tab ──────────────────────────────────────────────────────
+                {/* Termination reason */}
+                {nums.termination && nums.termination !== 'IN_PROGRESS' && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 0.75rem', background: 'rgba(20,184,166,0.06)', border: '1px solid rgba(20,184,166,0.2)', borderRadius: 6 }}>
+                    <ShieldCheck size={14} color="var(--color-accent)" />
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                      Termination: <strong style={{ color: 'var(--color-accent)' }}>{termLabel(nums.termination)}</strong>
+                    </span>
+                  </div>
+                )}
 
-  const renderLeads = () => (
-    <div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-      {/* Campaign selector */}
-      <div className="panel" style={{ padding: '1rem 1.5rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-            <FileSpreadsheet size={18} color="var(--color-accent)" />
-            <span style={{ fontWeight: 600 }}>{selectedCampaign || 'No campaign loaded'}</span>
-            {selectedCampaign && (
-              <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{leads.length} leads</span>
+                {/* Export Verification */}
+                {!isRunning && status.last_result && (() => {
+                  const lr = status.last_result;
+                  const sqlite = lr.sqlite_count ?? 0;
+                  const exp    = lr.export_count ?? lr.qualified_count ?? 0;
+                  const ok     = sqlite === exp;
+                  return (
+                    <div style={{ background: 'rgba(19,25,38,0.45)', border: '1px solid var(--border-color)', borderRadius: 8, padding: '0.75rem 1rem' }}>
+                      <div style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '0.5rem' }}>
+                        Export Verification
+                      </div>
+                      <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+                        <div style={{ textAlign: 'center' }}>
+                          <div style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-primary)' }}>{sqlite}</div>
+                          <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>SQLite</div>
+                        </div>
+                        <span style={{ color: 'var(--text-muted)', fontWeight: 700 }}>=</span>
+                        <div style={{ textAlign: 'center' }}>
+                          <div style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-primary)' }}>{exp}</div>
+                          <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Export</div>
+                        </div>
+                        <div style={{ marginLeft: 'auto' }}>
+                          {ok ? (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#10b981', fontSize: '0.8rem', fontWeight: 600 }}>
+                              <CheckCircle2 size={13} /> Verified
+                            </span>
+                          ) : (
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#f87171', fontSize: '0.8rem', fontWeight: 600 }}>
+                              <AlertTriangle size={13} /> Mismatch
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      {lr.file_name && (
+                        <div style={{ marginTop: '0.4rem', fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                          {lr.file_name}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* Campaign actions */}
+                {!isRunning && selectedCampaign && (
+                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                    <button className="btn-secondary" style={{ fontSize: '0.8rem' }}
+                      onClick={() => { setActiveTab('qualified-leads'); }}>
+                      <FileSpreadsheet size={13} /> View Leads
+                    </button>
+                    <button className="btn-secondary" style={{ fontSize: '0.8rem' }}
+                      onClick={() => handleExport('campaign', selectedCampaign)}>
+                      <Download size={13} /> Export Campaign
+                    </button>
+                  </div>
+                )}
+              </div>
             )}
           </div>
-          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+
+          {/* Rejection Intelligence */}
+          {rejections && (
+            <div className="panel">
+              <h2 className="panel-title"><Filter size={16} color="var(--color-accent)" /> Rejection Intelligence</h2>
+              <div className="rejection-grid">
+                {Object.entries(rejections).map(([label, count]) => (
+                  <div key={label} className="rejection-card">
+                    <div className="rejection-count">{count}</div>
+                    <div className="rejection-label">{label}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+      </div>
+    );
+  };
+
+  // ── TAB: Qualified Leads ───────────────────────────────────────────────────
+
+  const renderQualifiedLeads = () => (
+    <div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+      {/* Campaign selector + exports */}
+      <div className="panel" style={{ padding: '0.85rem 1.25rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <CheckCircle2 size={16} color="var(--color-accent)" />
+            <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>{selectedCampaign || 'No campaign loaded'}</span>
+            {selectedCampaign && <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{leads.length} leads</span>}
+          </div>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
             {selectedCampaign && (
-              <>
-                <a href={`${API_BASE}/download/${selectedCampaign}`} className="btn-secondary" style={{ textDecoration: 'none' }}>
-                  <Download size={14} /> Raw Export
-                </a>
-                <button className="btn-secondary" onClick={() => handleExport('campaign', selectedCampaign)}>
-                  <BarChart3 size={14} /> Intelligence Export
-                </button>
-              </>
+              <button className="btn-secondary" style={{ fontSize: '0.8rem' }} onClick={() => handleExport('campaign', selectedCampaign)}>
+                <Download size={13} /> Export Campaign
+              </button>
             )}
-            <button className="btn-secondary" onClick={() => handleExport('high_priority', null)}>
-              <Zap size={14} /> Export High Priority
+            <button className="btn-secondary" style={{ fontSize: '0.8rem' }} onClick={() => handleExport('high_priority', null)}>
+              <Zap size={13} /> Export High Priority
             </button>
           </div>
         </div>
@@ -621,12 +999,12 @@ export default function App() {
 
       {/* History quick-select */}
       {history.length > 0 && (
-        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
           {history.slice(0, 8).map((run, i) => (
             <button key={i} className="btn-secondary"
-              style={{ fontSize: '0.8rem', borderColor: selectedCampaign === run.filename ? 'var(--color-accent)' : 'var(--border-color)', color: selectedCampaign === run.filename ? 'var(--color-accent)' : undefined }}
+              style={{ fontSize: '0.75rem', borderColor: selectedCampaign === run.filename ? 'var(--color-accent)' : 'var(--border-color)', color: selectedCampaign === run.filename ? 'var(--color-accent)' : undefined }}
               onClick={() => { setSelectedCampaign(run.filename); fetchLeads(run.filename); }}>
-              {run.city} / {run.category}
+              <MapPin size={10} /> {run.city} / {run.category}
             </button>
           ))}
         </div>
@@ -634,67 +1012,61 @@ export default function App() {
 
       {/* Leads table */}
       <div className="panel" style={{ flexGrow: 1 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
           <div style={{ position: 'relative', flexGrow: 1, minWidth: 200 }}>
-            <input type="text" className="form-input" placeholder="Filter by name, phone, website, area…"
+            <input type="text" className="form-input" placeholder="Filter by name, phone, area, opportunity…"
               style={{ paddingLeft: '2.25rem' }} value={leadsSearch} onChange={e => setLeadsSearch(e.target.value)} />
             <Search size={14} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
           </div>
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-            {filteredLeads.length} of {leads.length}
-          </span>
+          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{filteredLeads.length} of {leads.length}</span>
         </div>
 
-        {loadingLeads && <LoadingSpinner label="Loading leads…" />}
+        {loadingLeads && <LoadingSpinner label="Loading qualified leads…" />}
         {!loadingLeads && errorLeads && <ErrorState message={errorLeads} onRetry={() => fetchLeads(selectedCampaign)} />}
         {!loadingLeads && !errorLeads && leads.length === 0 && (
-          <EmptyState icon={Database} message="No leads loaded" sub="Select a past campaign or run a new search." />
+          <EmptyState icon={CheckCircle2} message="No qualified leads" sub="Select a campaign or launch a new one." />
         )}
         {!loadingLeads && !errorLeads && leads.length > 0 && (
           <div className="leads-table-container">
             <table className="leads-table">
               <thead>
                 <tr>
-                  <SortHeader label="Business Name" col="name"          sortState={leadsSort} onSort={toggleLeadsSort} />
-                  <SortHeader label="Category"      col="category"      sortState={leadsSort} onSort={toggleLeadsSort} />
-                  <SortHeader label="Area"          col="area"          sortState={leadsSort} onSort={toggleLeadsSort} />
+                  <SortHeader label="Business"         col="name"          sortState={leadsSort} onSort={toggleLeadsSort} />
                   <th>Phone</th>
-                  <th>Website</th>
-                  <SortHeader label="Rating"        col="rating"        sortState={leadsSort} onSort={toggleLeadsSort} />
-                  <SortHeader label="Reviews"       col="review_count"  sortState={leadsSort} onSort={toggleLeadsSort} />
-                  <SortHeader label="Maturity"      col="maturity_grade" sortState={leadsSort} onSort={toggleLeadsSort} />
-                  <SortHeader label="Score"         col="score"         sortState={leadsSort} onSort={toggleLeadsSort} />
-                  <th>Priority</th>
+                  <SortHeader label="Area"             col="area"          sortState={leadsSort} onSort={toggleLeadsSort} />
+                  <SortHeader label="Confidence"       col="score"         sortState={leadsSort} onSort={toggleLeadsSort} />
+                  <th>Top Opportunity</th>
+                  <SortHeader label="Priority"         col="priority"      sortState={leadsSort} onSort={toggleLeadsSort} />
                 </tr>
               </thead>
               <tbody>
                 {filteredLeads.map((lead, idx) => (
-                  <tr key={idx}>
-                    <td style={{ fontWeight: 500 }}>{lead.name}</td>
-                    <td style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>{lead.category}</td>
-                    <td style={{ fontSize: '0.85rem' }}>
-                      <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-                        <MapPin size={11} style={{ color: 'var(--text-muted)' }} />{lead.area || '—'}
-                      </span>
+                  <tr key={idx} style={{ cursor: lead.business_id ? 'pointer' : 'default' }}
+                    onClick={() => {
+                      if (!lead.business_id) return;
+                      setSelectedLeadBiz(lead);
+                      fetchLeadBizDetail(lead.business_id);
+                    }}>
+                    <td>
+                      <div style={{ fontWeight: 500, fontSize: '0.88rem' }}>{lead.name}</div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{lead.category}</div>
                     </td>
                     <td style={{ fontFamily: 'monospace', fontSize: '0.8rem' }}>{lead.phone || '—'}</td>
-                    <td>
-                      {lead.website
-                        ? <a href={lead.website} target="_blank" rel="noreferrer" style={{ color: 'var(--color-accent)', textDecoration: 'none', fontSize: '0.8rem' }}>
-                            <Globe size={11} style={{ marginRight: 3 }} />Visit
-                          </a>
-                        : <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>None</span>
-                      }
-                    </td>
-                    <td><Stars rating={lead.rating} /></td>
-                    <td style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{lead.review_count ?? '—'}</td>
-                    <td><GradeBadge grade={lead.maturity_grade} /></td>
-                    <td><ScoreBadge score={lead.score} priority={lead.priority} /></td>
-                    <td>
-                      <span className={`badge ${priorityClass(lead.priority)}`}>
-                        <Tag size={11} />{lead.priority}
+                    <td style={{ fontSize: '0.82rem' }}>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                        <MapPin size={10} style={{ color: 'var(--text-muted)' }} />{lead.area || '—'}
                       </span>
                     </td>
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <ConfidenceBadge priority={lead.priority} />
+                        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{lead.score?.toFixed(1)}</span>
+                      </div>
+                    </td>
+                    <td style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {(lead.top_opportunity || '').split(' — ')[0] || '—'}
+                    </td>
+                    <td><PriorityBadge priority={lead.priority} /></td>
                   </tr>
                 ))}
               </tbody>
@@ -702,136 +1074,182 @@ export default function App() {
           </div>
         )}
       </div>
+
+      {/* Detail drawer for a selected lead */}
+      <BusinessDetailDrawer
+        biz={selectedLeadBiz}
+        detail={leadBizDetail}
+        loading={loadingLeadDetail}
+        onClose={() => { setSelectedLeadBiz(null); setLeadBizDetail(null); }}
+      />
     </div>
   );
 
-  // ── Render: Opportunities tab ──────────────────────────────────────────────
+  // ── TAB: Opportunities ─────────────────────────────────────────────────────
 
-  const renderOpportunities = () => (
-    <div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-      {/* Toolbar */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-        <div style={{ position: 'relative', flexGrow: 1, minWidth: 200 }}>
-          <input type="text" className="form-input" placeholder="Filter by business or service…"
-            style={{ paddingLeft: '2.25rem' }} value={oppsSearch} onChange={e => setOppsSearch(e.target.value)} />
-          <Search size={14} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-        </div>
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
-          {['', 'HIGH', 'MEDIUM', 'LOW'].map(p => (
-            <button key={p} className="btn-secondary"
-              style={{ fontSize: '0.8rem', borderColor: oppsPriorityFilter === p ? 'var(--color-accent)' : 'var(--border-color)', color: oppsPriorityFilter === p ? 'var(--color-accent)' : undefined }}
-              onClick={() => setOppsPriorityFilter(p)}>
-              {p || 'All'}
+  const renderOpportunities = () => {
+    const serviceNames = Object.keys(oppsByService).sort((a, b) => {
+      const totA = oppsByService[a].reduce((s, o) => s + (o.score || 0), 0);
+      const totB = oppsByService[b].reduce((s, o) => s + (o.score || 0), 0);
+      return totB - totA;
+    });
+
+    if (selectedService && oppsByService[selectedService]) {
+      const serviceOpps = oppsByService[selectedService];
+      return (
+        <div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <button className="btn-secondary" style={{ fontSize: '0.8rem' }} onClick={() => setSelectedService(null)}>
+              <ChevronLeft size={14} /> Services
             </button>
-          ))}
-        </div>
-        <button className="btn-secondary" onClick={fetchOpps}><RefreshCw size={14} /></button>
-        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{filteredOpps.length} of {opps.length}</span>
-      </div>
-
-      {loadingOpps && <LoadingSpinner label="Loading opportunities…" />}
-      {!loadingOpps && errorOpps && <ErrorState message={errorOpps} onRetry={fetchOpps} />}
-      {!loadingOpps && !errorOpps && opps.length === 0 && (
-        <EmptyState icon={TrendingUp} message="No opportunities yet" sub="Run a search to generate intelligence." />
-      )}
-
-      {!loadingOpps && !errorOpps && filteredOpps.map(opp => {
-        const expanded = expandedOpp === opp.id;
-        const detail = oppDetail[opp.id];
-        return (
-          <div key={opp.id} className="panel" style={{ padding: '1rem 1.25rem', cursor: 'pointer' }}
-            onClick={() => toggleOpp(opp.id)}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-              <div style={{ flexGrow: 1, minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-                  <span style={{ fontWeight: 600, fontSize: '0.95rem' }}>{opp.title}</span>
-                </div>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 3 }}>
-                  {opp.business_category} • {opp.pipeline_stage}
-                </div>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexShrink: 0 }}>
-                <ScoreBadge score={opp.score} priority={opp.priority} />
-                <GradeBadge grade={opp.maturity_grade} />
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  {(opp.close_probability * 100).toFixed(0)}% close
-                </span>
-                <span style={{ fontSize: '0.8rem', color: 'var(--color-accent)', fontWeight: 600 }}>
-                  ₹{Number(opp.estimated_value).toLocaleString()}
-                </span>
-                {expanded ? <ChevronUp size={16} /> : <ChevronRight size={16} />}
-              </div>
-            </div>
-
-            {expanded && (
-              <div style={{ marginTop: '1rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}
-                onClick={e => e.stopPropagation()}>
-                {!detail
-                  ? <LoadingSpinner label="Loading signals…" />
-                  : (
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '0.75rem' }}>
-                      {(detail.signals || []).map((sig, i) => (
-                        <div key={i} style={{
-                          background: sig.score_delta > 0 ? 'rgba(16,185,129,0.06)' : 'rgba(239,68,68,0.06)',
-                          border: `1px solid ${sig.score_delta > 0 ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)'}`,
-                          borderRadius: 6, padding: '0.6rem 0.75rem',
-                        }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
-                            <span style={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{sig.rule_name}</span>
-                            <span style={{ fontWeight: 700, fontSize: '0.8rem', color: sig.score_delta > 0 ? '#10b981' : '#ef4444' }}>
-                              {sig.score_delta > 0 ? '+' : ''}{sig.score_delta.toFixed(1)}
-                            </span>
-                          </div>
-                          <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>{sig.reason}</div>
-                        </div>
-                      ))}
-                      {(!detail.signals || detail.signals.length === 0) && (
-                        <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>No signals recorded.</div>
-                      )}
-                    </div>
-                  )
-                }
-              </div>
-            )}
+            <h2 style={{ fontFamily: 'var(--display-font)', fontWeight: 600, fontSize: '1rem', color: 'var(--color-accent)' }}>
+              {selectedService}
+            </h2>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{serviceOpps.length} businesses</span>
           </div>
-        );
-      })}
-    </div>
-  );
 
-  // ── Render: Businesses tab ────���────────────────────────────────────────────
+          <div className="panel">
+            <div className="leads-table-container">
+              <table className="leads-table">
+                <thead>
+                  <tr>
+                    <th>Business</th>
+                    <th>Category</th>
+                    <th>Score</th>
+                    <th>Close Prob.</th>
+                    <th>Est. Value</th>
+                    <th>Maturity</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {serviceOpps.map(opp => {
+                    const expanded = expandedOpp === opp.id;
+                    const detail = oppDetail[opp.id];
+                    return (
+                      <React.Fragment key={opp.id}>
+                        <tr style={{ cursor: 'pointer' }} onClick={() => toggleOpp(opp.id)}>
+                          <td style={{ fontWeight: 500, fontSize: '0.88rem' }}>{opp.business_name}</td>
+                          <td style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>{opp.business_category}</td>
+                          <td><ScoreBadge score={opp.score} priority={opp.priority} /></td>
+                          <td style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{(opp.close_probability * 100).toFixed(0)}%</td>
+                          <td style={{ fontSize: '0.8rem', color: 'var(--color-accent)', fontWeight: 600 }}>₹{Number(opp.estimated_value).toLocaleString()}</td>
+                          <td><GradeBadge grade={opp.maturity_grade} /></td>
+                          <td>{expanded ? <ChevronUp size={14} /> : <ChevronRight size={14} />}</td>
+                        </tr>
+                        {expanded && (
+                          <tr>
+                            <td colSpan={7} style={{ background: 'rgba(19,25,38,0.3)', padding: '0.75rem 1rem' }}>
+                              {!detail
+                                ? <LoadingSpinner label="Loading signals…" />
+                                : (
+                                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                    {(detail.signals || []).map((sig, i) => (
+                                      <div key={i} style={{
+                                        background: sig.score_delta > 0 ? 'rgba(16,185,129,0.06)' : 'rgba(239,68,68,0.06)',
+                                        border: `1px solid ${sig.score_delta > 0 ? 'rgba(16,185,129,0.2)' : 'rgba(239,68,68,0.2)'}`,
+                                        borderRadius: 6, padding: '0.4rem 0.6rem', fontSize: '0.75rem',
+                                      }}>
+                                        <span style={{ color: 'var(--text-secondary)' }}>{sig.rule_name}</span>
+                                        <span style={{ marginLeft: 8, fontWeight: 700, color: sig.score_delta > 0 ? '#10b981' : '#ef4444' }}>
+                                          {sig.score_delta > 0 ? '+' : ''}{sig.score_delta.toFixed(1)}
+                                        </span>
+                                      </div>
+                                    ))}
+                                    {(!detail.signals || detail.signals.length === 0) && (
+                                      <span style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>No signals recorded.</span>
+                                    )}
+                                  </div>
+                                )
+                              }
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      );
+    }
 
-  const renderBusinesses = () => (
-    <div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.5rem', position: 'relative' }}>
-      {/* Toolbar */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+    // Service grid view
+    return (
+      <div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <Layers size={16} color="var(--color-accent)" />
+            <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>Opportunities by Service</span>
+          </div>
+          <button className="btn-secondary" style={{ fontSize: '0.8rem' }} onClick={fetchOpps}>
+            <RefreshCw size={13} />
+          </button>
+        </div>
+
+        {loadingOpps && <LoadingSpinner label="Loading opportunities…" />}
+        {!loadingOpps && errorOpps && <ErrorState message={errorOpps} onRetry={fetchOpps} />}
+        {!loadingOpps && !errorOpps && serviceNames.length === 0 && (
+          <EmptyState icon={TrendingUp} message="No opportunities yet" sub="Run a campaign to generate opportunity intelligence." />
+        )}
+
+        {!loadingOpps && !errorOpps && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '1rem' }}>
+            {serviceNames.map(svc => {
+              const svcOpps = oppsByService[svc];
+              const totalValue    = svcOpps.reduce((s, o) => s + (o.estimated_value || 0), 0);
+              const highCount     = svcOpps.filter(o => (o.priority || '').toUpperCase() === 'HIGH').length;
+              const avgScore      = svcOpps.reduce((s, o) => s + (o.score || 0), 0) / svcOpps.length;
+              const avgConfidence = svcOpps.reduce((s, o) => s + (o.close_probability || 0), 0) / svcOpps.length;
+              return (
+                <div key={svc} className="panel service-card" onClick={() => setSelectedService(svc)} style={{ cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem' }}>
+                    <div style={{ fontWeight: 600, fontSize: '0.92rem', color: 'var(--text-primary)', lineHeight: 1.3, maxWidth: '70%' }}>{svc}</div>
+                    <ChevronRight size={16} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
+                    <div className="svc-stat"><span className="svc-stat-val">{svcOpps.length}</span><span className="svc-stat-lbl">Businesses</span></div>
+                    <div className="svc-stat"><span className="svc-stat-val" style={{ color: 'var(--priority-high)' }}>{highCount}</span><span className="svc-stat-lbl">High Priority</span></div>
+                    <div className="svc-stat"><span className="svc-stat-val">{avgScore.toFixed(0)}</span><span className="svc-stat-lbl">Avg Score</span></div>
+                    <div className="svc-stat"><span className="svc-stat-val">{formatPct(avgConfidence)}</span><span className="svc-stat-lbl">Avg Conf.</span></div>
+                  </div>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--color-accent)', fontWeight: 600 }}>
+                    ₹{Number(totalValue).toLocaleString()} est. pipeline
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ── TAB: Business Registry ─────────────────────────────────────────────────
+
+  const renderBusinessRegistry = () => (
+    <div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem', position: 'relative' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
         <div style={{ position: 'relative', flexGrow: 1, minWidth: 200 }}>
-          <input type="text" className="form-input" placeholder="Search businesses…"
+          <input type="text" className="form-input" placeholder="Search by name, category, area…"
             style={{ paddingLeft: '2.25rem' }} value={bizSearch}
-            onChange={e => { setBizSearch(e.target.value); }}
+            onChange={e => setBizSearch(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') fetchBiz(); }} />
           <Search size={14} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
         </div>
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
-          {['', 'A', 'B', 'C', 'D', 'F'].map(g => (
-            <button key={g} className="btn-secondary"
-              style={{ fontSize: '0.8rem', minWidth: 32, borderColor: bizGrade === g ? (g ? gradeColor(g) : 'var(--color-accent)') : 'var(--border-color)', color: bizGrade === g ? (g ? gradeColor(g) : 'var(--color-accent)') : undefined }}
-              onClick={() => { setBizGrade(g); }}>
-              {g || 'All'}
-            </button>
-          ))}
-        </div>
-        <button className="btn-secondary" onClick={fetchBiz}><RefreshCw size={14} /></button>
-        <button className="btn-secondary" onClick={() => handleExport('all', null)}>
-          <Download size={14} /> Export All
+        <button className="btn-secondary" style={{ fontSize: '0.8rem' }} onClick={fetchBiz}><RefreshCw size={13} /></button>
+        <button className="btn-secondary" style={{ fontSize: '0.8rem' }} onClick={() => handleExport('all', null)}>
+          <Download size={13} /> Export All
         </button>
-        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{businesses.length} businesses</span>
+        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{businesses.length} businesses</span>
       </div>
 
-      {loadingBiz && <LoadingSpinner label="Loading businesses…" />}
+      {loadingBiz && <LoadingSpinner label="Loading registry…" />}
       {!loadingBiz && errorBiz && <ErrorState message={errorBiz} onRetry={fetchBiz} />}
       {!loadingBiz && !errorBiz && businesses.length === 0 && (
-        <EmptyState icon={Building2} message="No businesses found" sub="Run a search to discover businesses." />
+        <EmptyState icon={Building2} message="Registry empty" sub="Run a campaign to populate the business registry." />
       )}
 
       {!loadingBiz && !errorBiz && businesses.length > 0 && (
@@ -840,38 +1258,50 @@ export default function App() {
             <table className="leads-table">
               <thead>
                 <tr>
-                  <SortHeader label="Business" col="name"          sortState={bizSort} onSort={toggleBizSort} />
+                  <SortHeader label="Business"   col="name"          sortState={bizSort} onSort={toggleBizSort} />
                   <th>Category</th>
-                  <th>Area</th>
                   <th>Phone</th>
-                  <SortHeader label="Rating"   col="rating"        sortState={bizSort} onSort={toggleBizSort} />
-                  <SortHeader label="Reviews"  col="review_count"  sortState={bizSort} onSort={toggleBizSort} />
-                  <SortHeader label="Maturity" col="maturity_score" sortState={bizSort} onSort={toggleBizSort} />
-                  <SortHeader label="Score"    col="score"         sortState={bizSort} onSort={toggleBizSort} />
-                  <th>Top Opportunity</th>
+                  <th>Website</th>
+                  <th>Campaigns</th>
+                  <th>Last Seen</th>
+                  <th>Confidence</th>
+                  <th>Status</th>
                   <th></th>
                 </tr>
               </thead>
               <tbody>
                 {businesses.map((biz, idx) => (
-                  <tr key={idx} style={{ cursor: 'pointer' }} onClick={() => openBizDetail(biz)}>
-                    <td style={{ fontWeight: 500 }}>{biz.name}</td>
-                    <td style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{biz.category}</td>
-                    <td style={{ fontSize: '0.8rem' }}>{biz.area || '—'}</td>
-                    <td style={{ fontFamily: 'monospace', fontSize: '0.78rem' }}>{biz.phone || '—'}</td>
-                    <td><Stars rating={biz.rating} /></td>
-                    <td style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{biz.review_count ?? '—'}</td>
+                  <tr key={idx} style={{ cursor: 'pointer' }} onClick={() => { setSelectedBiz(biz); setBizDetail(null); fetchBizDetail(biz.id); }}>
                     <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <GradeBadge grade={biz.maturity_grade} />
-                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{biz.maturity_score}</span>
-                      </div>
+                      <div style={{ fontWeight: 500, fontSize: '0.88rem' }}>{biz.name}</div>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}><MapPin size={9} style={{ display: 'inline', marginRight: 2 }} />{biz.area || '—'}</div>
                     </td>
-                    <td><ScoreBadge score={biz.top_score} priority={biz.priority} /></td>
-                    <td style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {biz.top_opportunity ? biz.top_opportunity.split(' — ')[0] : '—'}
+                    <td style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>{biz.category || '—'}</td>
+                    <td style={{ fontFamily: 'monospace', fontSize: '0.78rem' }}>{biz.phone || '—'}</td>
+                    <td style={{ fontSize: '0.78rem' }}>
+                      {biz.website
+                        ? <a href={biz.website} target="_blank" rel="noreferrer" style={{ color: 'var(--color-accent)', textDecoration: 'none', fontSize: '0.75rem' }}
+                            onClick={e => e.stopPropagation()}><Globe size={11} style={{ marginRight: 2 }} />Site</a>
+                        : <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>None</span>
+                      }
                     </td>
-                    <td><ChevronRight size={14} style={{ color: 'var(--text-muted)' }} /></td>
+                    <td style={{ textAlign: 'center' }}>
+                      <span style={{ background: 'rgba(20,184,166,0.08)', border: '1px solid rgba(20,184,166,0.2)', borderRadius: 4, padding: '1px 7px', fontSize: '0.75rem', color: 'var(--color-accent)', fontWeight: 600 }}>
+                        {biz.discovery_count || 1}
+                      </span>
+                    </td>
+                    <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                      {biz.last_scraped_at ? new Date(biz.last_scraped_at).toLocaleDateString() : '—'}
+                    </td>
+                    <td><ConfidenceBadge priority={biz.priority} /></td>
+                    <td>
+                      {biz.business_status ? (
+                        <span style={{ fontSize: '0.7rem', color: biz.business_status === 'OPERATIONAL' ? '#10b981' : 'var(--text-muted)', background: 'rgba(255,255,255,0.04)', borderRadius: 4, padding: '1px 5px', border: '1px solid var(--border-color)' }}>
+                          {biz.business_status}
+                        </span>
+                      ) : '—'}
+                    </td>
+                    <td><ChevronRight size={13} style={{ color: 'var(--text-muted)' }} /></td>
                   </tr>
                 ))}
               </tbody>
@@ -880,108 +1310,382 @@ export default function App() {
         </div>
       )}
 
-      {/* Business Detail Drawer */}
-      {selectedBiz && (
-        <div className="detail-drawer">
-          <div className="detail-drawer-overlay" onClick={() => setSelectedBiz(null)} />
-          <div className="detail-drawer-panel">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.5rem' }}>
-              <div>
-                <h2 style={{ fontFamily: 'var(--display-font)', fontWeight: 700, fontSize: '1.2rem' }}>{selectedBiz.name}</h2>
-                <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: 2 }}>{selectedBiz.category} • {selectedBiz.area}</div>
-              </div>
-              <button className="btn-secondary" style={{ padding: '0.4rem' }} onClick={() => setSelectedBiz(null)}><X size={16} /></button>
-            </div>
+      <BusinessDetailDrawer
+        biz={selectedBiz}
+        detail={bizDetail}
+        loading={loadingDetail}
+        onClose={() => { setSelectedBiz(null); setBizDetail(null); }}
+      />
+    </div>
+  );
 
-            {loadingDetail && <LoadingSpinner label="Loading detail…" />}
-            {!loadingDetail && !bizDetail && <div style={{ color: 'var(--text-muted)' }}>Could not load detail.</div>}
-            {!loadingDetail && bizDetail && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', overflowY: 'auto', maxHeight: 'calc(100vh - 180px)', paddingRight: 4 }}>
-                {/* Contact */}
-                <div>
-                  <div className="detail-section-title">Contact</div>
-                  <div className="detail-row"><Phone size={13} />{bizDetail.phone || '—'}</div>
-                  {bizDetail.contact_email && <div className="detail-row"><Mail size={13} />{bizDetail.contact_email}</div>}
-                  {bizDetail.website && <div className="detail-row"><Globe size={13} /><a href={bizDetail.website} target="_blank" rel="noreferrer" style={{ color: 'var(--color-accent)' }}>{bizDetail.website}</a></div>}
-                  {bizDetail.address && <div className="detail-row"><MapPin size={13} />{bizDetail.address}{bizDetail.city ? `, ${bizDetail.city}` : ''}</div>}
-                  <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
-                    <Stars rating={bizDetail.rating} />
-                    {bizDetail.review_count != null && <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{bizDetail.review_count} reviews</span>}
-                    {bizDetail.business_status && <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', background: 'rgba(255,255,255,0.05)', borderRadius: 4, padding: '1px 6px' }}>{bizDetail.business_status}</span>}
-                  </div>
+  // ── TAB: Analytics ─────────────────────────────────────────────────────────
+
+  const renderAnalytics = () => {
+    if (loadingAnalytics) return <LoadingSpinner label="Loading analytics…" />;
+    if (!analytics) return <EmptyState icon={BarChart3} message="No analytics data" sub="Run campaigns to generate analytics." />;
+
+    const { summary, campaigns } = analytics;
+
+    return (
+      <div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+        {/* Summary cards */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem' }}>
+          {[
+            { Icon: Play,         label: 'Campaigns',           value: summary.total_campaigns },
+            { Icon: CheckCircle2, label: 'Total Qualified',     value: summary.total_qualified,          accent: 'var(--color-accent)' },
+            { Icon: Target,       label: 'Total Requested',     value: summary.total_requested },
+            { Icon: BarChart3,    label: 'Qualification Yield', value: formatPct(summary.qualification_yield), accent: '#10b981' },
+            { Icon: Clock,        label: 'Avg Runtime',         value: formatRuntime(summary.avg_runtime_sec) },
+            { Icon: Award,        label: 'Avg Confidence',      value: formatPct(summary.avg_confidence),   accent: '#f59e0b' },
+          ].map(({ Icon, label, value, accent }) => (
+            <MetricCard key={label} Icon={Icon} value={value} label={label} accent={accent} />
+          ))}
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
+          {/* Top Locations */}
+          <div className="panel">
+            <h2 className="panel-title"><MapPin size={15} color="var(--color-accent)" /> Top Locations</h2>
+            {summary.top_locations.length === 0
+              ? <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>No data yet.</div>
+              : summary.top_locations.map(({ name, count }) => (
+                <div key={name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.4rem 0', borderBottom: '1px solid var(--border-color)' }}>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{name}</span>
+                  <span style={{ fontWeight: 600, fontSize: '0.8rem', color: 'var(--color-accent)' }}>{count} campaigns</span>
                 </div>
+              ))
+            }
+          </div>
 
-                {/* Digital Maturity */}
-                {bizDetail.maturity && (
-                  <div>
-                    <div className="detail-section-title">Digital Maturity</div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem' }}>
-                      <GradeBadge grade={bizDetail.maturity.grade} />
-                      <div style={{ flexGrow: 1, background: 'var(--border-color)', borderRadius: 4, height: 6, overflow: 'hidden' }}>
-                        <div style={{ width: `${bizDetail.maturity.score}%`, height: '100%', background: gradeColor(bizDetail.maturity.grade), borderRadius: 4 }} />
-                      </div>
-                      <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{(bizDetail.maturity.score || 0).toFixed(0)}/100</span>
-                    </div>
-                    {bizDetail.maturity.dimensions?.map((dim, i) => (
-                      <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.35rem 0', borderBottom: '1px solid var(--border-color)', fontSize: '0.8rem' }}>
-                        <span style={{ color: dim.gap ? '#f97316' : '#10b981' }}>
-                          {dim.gap ? '✗' : '✓'} {dim.name}
-                        </span>
-                        <span style={{ color: 'var(--text-muted)' }}>{dim.score?.toFixed(0)}/{dim.max_score?.toFixed(0)}</span>
-                      </div>
-                    ))}
-                    {bizDetail.maturity.gaps?.length > 0 && (
-                      <div style={{ marginTop: '0.5rem' }}>
-                        <div style={{ fontSize: '0.75rem', color: '#f97316', fontWeight: 600, marginBottom: 2 }}>Gaps:</div>
-                        {bizDetail.maturity.gaps.map((g, i) => <div key={i} style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', paddingLeft: 8 }}>• {g}</div>)}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Opportunities */}
-                {bizDetail.opportunities?.length > 0 && (
-                  <div>
-                    <div className="detail-section-title">Opportunities ({bizDetail.opportunities.length})</div>
-                    {bizDetail.opportunities.map((opp, i) => (
-                      <div key={i} style={{ background: 'rgba(19,25,38,0.4)', border: '1px solid var(--border-color)', borderRadius: 8, padding: '0.75rem', marginBottom: '0.75rem' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                          <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>{opp.title?.split(' — ')[0]}</span>
-                          <ScoreBadge score={opp.score} priority={opp.score >= 60 ? 'HIGH' : opp.score >= 28 ? 'MEDIUM' : 'LOW'} />
-                        </div>
-                        <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', display: 'flex', gap: '1rem' }}>
-                          <span>{(opp.close_probability * 100).toFixed(0)}% close prob.</span>
-                          <span>₹{Number(opp.estimated_value).toLocaleString()} est.</span>
-                        </div>
-                        {opp.signals?.length > 0 && (
-                          <div style={{ marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: 3 }}>
-                            {opp.signals.slice(0, 5).map((sig, j) => (
-                              <div key={j} style={{ fontSize: '0.75rem', display: 'flex', justifyContent: 'space-between' }}>
-                                <span style={{ color: 'var(--text-secondary)' }}>{sig.rule_name}</span>
-                                <span style={{ color: sig.score_delta > 0 ? '#10b981' : '#ef4444', fontWeight: 600 }}>
-                                  {sig.score_delta > 0 ? '+' : ''}{sig.score_delta.toFixed(1)}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', paddingTop: '0.5rem', borderTop: '1px solid var(--border-color)' }}>
-                  First seen: {formatDate(bizDetail.first_discovered_at)} &nbsp;·&nbsp; Last scraped: {formatDate(bizDetail.last_scraped_at)}
+          {/* Top Categories */}
+          <div className="panel">
+            <h2 className="panel-title"><Tag size={15} color="var(--color-accent)" /> Top Categories</h2>
+            {summary.top_categories.length === 0
+              ? <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>No data yet.</div>
+              : summary.top_categories.map(({ name, count }) => (
+                <div key={name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.4rem 0', borderBottom: '1px solid var(--border-color)' }}>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{name}</span>
+                  <span style={{ fontWeight: 600, fontSize: '0.8rem', color: 'var(--color-accent)' }}>{count} campaigns</span>
                 </div>
-              </div>
-            )}
+              ))
+            }
           </div>
         </div>
-      )}
+
+        {/* Rejection Breakdown */}
+        {Object.keys(summary.rejection_breakdown || {}).length > 0 && (
+          <div className="panel">
+            <h2 className="panel-title"><Filter size={15} color="var(--color-accent)" /> Rejection Breakdown (All Time)</h2>
+            <div className="rejection-grid">
+              {Object.entries(summary.rejection_breakdown)
+                .sort(([, a], [, b]) => b - a)
+                .map(([key, count]) => (
+                  <div key={key} className="rejection-card">
+                    <div className="rejection-count">{count}</div>
+                    <div className="rejection-label">{key.replace(/_/g, ' ')}</div>
+                  </div>
+                ))
+              }
+            </div>
+          </div>
+        )}
+
+        {/* Campaign History */}
+        <div className="panel">
+          <h2 className="panel-title"><History size={15} color="var(--color-accent)" /> Campaign History</h2>
+          <div className="leads-table-container">
+            <table className="leads-table">
+              <thead>
+                <tr>
+                  <th>Location</th>
+                  <th>Category</th>
+                  <th>Status</th>
+                  <th>Qualified</th>
+                  <th>Requested</th>
+                  <th>Runtime</th>
+                  <th>Avg Confidence</th>
+                  <th>Termination</th>
+                  <th>Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {campaigns.map((c, i) => (
+                  <tr key={i}>
+                    <td style={{ fontSize: '0.82rem', fontWeight: 500 }}>{c.city}</td>
+                    <td style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>{c.category}</td>
+                    <td>
+                      <span style={{
+                        fontSize: '0.7rem', fontWeight: 600, borderRadius: 4, padding: '1px 6px',
+                        background: c.status === 'COMPLETED' ? 'rgba(16,185,129,0.1)' : c.status === 'RUNNING' ? 'rgba(20,184,166,0.1)' : 'rgba(239,68,68,0.08)',
+                        color: c.status === 'COMPLETED' ? '#10b981' : c.status === 'RUNNING' ? 'var(--color-accent)' : '#f87171',
+                        border: `1px solid ${c.status === 'COMPLETED' ? 'rgba(16,185,129,0.25)' : c.status === 'RUNNING' ? 'rgba(20,184,166,0.25)' : 'rgba(239,68,68,0.2)'}`,
+                      }}>{c.status}</span>
+                    </td>
+                    <td style={{ fontWeight: 600, color: 'var(--color-accent)', fontSize: '0.85rem' }}>{c.qualified_count}</td>
+                    <td style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>{c.requested_count}</td>
+                    <td style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{formatRuntime(c.duration_sec)}</td>
+                    <td style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{c.avg_confidence > 0 ? formatPct(c.avg_confidence) : '—'}</td>
+                    <td style={{ fontSize: '0.73rem', color: 'var(--text-muted)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {termLabel(c.termination_reason)}
+                    </td>
+                    <td style={{ fontSize: '0.73rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                      {c.started_at ? new Date(c.started_at).toLocaleDateString() : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // ── Factory Reset ──────────────────────────────────────────────────────────
+  const [resetDialogOpen, setResetDialogOpen]   = useState(false);
+  const [resetConfirmText, setResetConfirmText] = useState('');
+  const [resetRunning, setResetRunning]         = useState(false);
+  const [resetSuccess, setResetSuccess]         = useState(false);
+
+  const executeFactoryReset = async () => {
+    setResetRunning(true);
+    try {
+      const res = await fetch(`${API_BASE}/factory-reset`, { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        alert(`Reset failed: ${err.detail}`);
+        return;
+      }
+      setResetDialogOpen(false);
+      setResetConfirmText('');
+      setResetSuccess(true);
+      setTimeout(() => setResetSuccess(false), 4000);
+      // Refresh dependent state
+      fetchSettings();
+    } catch (e) {
+      alert(`Reset failed: ${e.message}`);
+    } finally {
+      setResetRunning(false);
+    }
+  };
+
+  // ── TAB: Settings ──────────────────────────────────────────────────────────
+
+  const SETTING_GROUPS = [
+    {
+      label: 'Scraper & Network',
+      keys: ['MAX_RETRIES', 'BASE_BACKOFF_SECONDS', 'THROTTLE_DELAY', 'REQUEST_TIMEOUT', 'USER_AGENT'],
+    },
+    {
+      label: 'Performance Budgets',
+      keys: ['PERF_BUDGET_MAX_CAMPAIGN_SEC', 'PERF_BUDGET_MAX_VISITS_PER_QUALIFIED', 'PERF_BUDGET_MIN_YIELD'],
+    },
+    {
+      label: 'Extraction Quality',
+      keys: ['QUALITY_MIN_EXTRACTION_RATE', 'QUALITY_MIN_EXTRACTION_SAMPLE'],
+    },
+    {
+      label: 'Validation',
+      keys: ['VALIDATION_ALLOW_TEMP_CLOSED'],
+    },
+    {
+      label: 'Confidence Thresholds',
+      keys: ['opp.confidence.high_threshold', 'opp.confidence.medium_threshold', 'opp.confidence.min_signals_high', 'opp.confidence.min_signals_medium'],
+    },
+    {
+      label: 'Priority Thresholds',
+      keys: ['opp.priority.high_threshold', 'opp.priority.medium_threshold'],
+    },
+    {
+      label: 'Scoring Weights',
+      keys: ['opp.score.no_website', 'opp.score.has_website', 'opp.score.review_high', 'opp.score.review_mid', 'opp.score.review_low', 'opp.score.rating_high', 'opp.score.rating_mid', 'opp.score.rating_low', 'opp.score.operational'],
+    },
+    {
+      label: 'Review & Rating Thresholds',
+      keys: ['opp.review.high_threshold', 'opp.review.mid_threshold', 'opp.rating.high_threshold', 'opp.rating.mid_threshold', 'opp.rating.low_threshold'],
+    },
+    {
+      label: 'Value Multipliers',
+      keys: ['opp.value.high_confidence_multiplier', 'opp.value.medium_confidence_multiplier', 'opp.value.low_confidence_multiplier'],
+    },
+  ];
+
+  const renderSettings = () => {
+    if (loadingSettings) return <LoadingSpinner label="Loading settings…" />;
+    if (Object.keys(settingsData).length === 0) return <EmptyState icon={Settings} message="No settings loaded" sub="Settings will appear after the backend initializes." />;
+
+    const allKnownKeys = SETTING_GROUPS.flatMap(g => g.keys);
+    const otherKeys = Object.keys(settingsData).filter(k => !allKnownKeys.includes(k));
+
+    const renderGroup = (label, keys) => {
+      const available = keys.filter(k => settingsData[k]);
+      if (available.length === 0) return null;
+      return (
+        <div key={label} className="panel">
+          <h2 className="panel-title"><Settings size={15} color="var(--color-accent)" /> {label}</h2>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            {available.map(key => {
+              const s = settingsData[key];
+              const isDirty = editedSettings[key] !== s.value;
+              const isSaving = savingKey === key;
+              return (
+                <div key={key} style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '0.5rem', alignItems: 'center' }}>
+                  <div>
+                    <div style={{ fontSize: '0.8rem', fontWeight: 500, color: 'var(--text-primary)', fontFamily: 'monospace' }}>{key}</div>
+                    {s.description && <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: 1 }}>{s.description}</div>}
+                  </div>
+                  <input
+                    type="text"
+                    className="form-input"
+                    style={{ width: 100, padding: '0.4rem 0.6rem', fontSize: '0.82rem', fontFamily: 'monospace', textAlign: 'right', borderColor: isDirty ? 'var(--color-accent)' : undefined }}
+                    value={editedSettings[key] ?? s.value}
+                    onChange={e => setEditedSettings(prev => ({ ...prev, [key]: e.target.value }))}
+                  />
+                  <button className="btn-secondary" style={{ fontSize: '0.75rem', padding: '0.4rem 0.65rem', opacity: isDirty ? 1 : 0.4 }}
+                    disabled={!isDirty || isSaving} onClick={() => saveSetting(key)}>
+                    {isSaving ? <RefreshCw size={12} style={{ animation: 'spin 1s linear infinite' }} /> : 'Save'}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    };
+
+    return (
+      <div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem', maxWidth: 860 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
+          <Info size={14} color="var(--text-muted)" />
+          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Changes apply to the next campaign. Numeric values only.</span>
+        </div>
+        {SETTING_GROUPS.map(({ label, keys }) => renderGroup(label, keys))}
+        {otherKeys.length > 0 && renderGroup('Other', otherKeys)}
+
+        {/* ── Danger Zone ── */}
+        <div className="panel" style={{ borderColor: '#5c1a1a', background: 'rgba(92,26,26,0.12)' }}>
+          <h2 className="panel-title" style={{ color: '#f87171' }}>
+            <AlertTriangle size={15} color="#f87171" /> Danger Zone
+          </h2>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1.5rem' }}>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: '0.88rem', color: 'var(--text-primary)', marginBottom: '0.3rem' }}>
+                Factory Reset LeadForge
+              </div>
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', maxWidth: 520 }}>
+                Permanently removes all campaigns, businesses, leads, opportunities, search history, analytics and
+                exported Excel files. The database is immediately recreated using the default schema and settings.
+              </div>
+            </div>
+            <button
+              className="btn-secondary"
+              style={{ flexShrink: 0, borderColor: '#f87171', color: '#f87171', whiteSpace: 'nowrap' }}
+              onClick={() => { setResetDialogOpen(true); setResetConfirmText(''); }}
+            >
+              <AlertTriangle size={13} /> Factory Reset
+            </button>
+          </div>
+          {resetSuccess && (
+            <div style={{ marginTop: '0.75rem', fontSize: '0.8rem', color: '#4ade80', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <CheckCircle2 size={14} /> Factory reset completed. All data has been cleared and the database reinitialized.
+            </div>
+          )}
+        </div>
+
+        {/* ── Confirmation dialog ── */}
+        {resetDialogOpen && (
+          <div style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex',
+            alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+          }}>
+            <div className="panel" style={{ width: 420, borderColor: '#5c1a1a', background: 'var(--bg-panel)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                <h2 style={{ fontFamily: 'var(--display-font)', fontWeight: 700, fontSize: '1rem', color: '#f87171', margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <AlertTriangle size={16} color="#f87171" /> Confirm Factory Reset
+                </h2>
+                <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
+                  onClick={() => setResetDialogOpen(false)}><X size={18} /></button>
+              </div>
+              <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: '1.25rem', lineHeight: 1.55 }}>
+                This will permanently delete all data and recreate the database. This action <strong style={{ color: 'var(--text-primary)' }}>cannot be undone</strong>.
+                <br /><br />
+                Type <strong style={{ color: '#f87171', fontFamily: 'monospace' }}>RESET</strong> to confirm.
+              </p>
+              <input
+                type="text"
+                className="form-input"
+                placeholder="Type RESET to confirm"
+                value={resetConfirmText}
+                onChange={e => setResetConfirmText(e.target.value)}
+                style={{ width: '100%', marginBottom: '1rem', borderColor: resetConfirmText === 'RESET' ? '#f87171' : undefined }}
+                autoFocus
+              />
+              <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
+                <button className="btn-secondary" onClick={() => setResetDialogOpen(false)} disabled={resetRunning}>
+                  Cancel
+                </button>
+                <button
+                  className="btn-secondary"
+                  style={{ borderColor: '#f87171', color: '#f87171', opacity: resetConfirmText === 'RESET' ? 1 : 0.4 }}
+                  disabled={resetConfirmText !== 'RESET' || resetRunning}
+                  onClick={executeFactoryReset}
+                >
+                  {resetRunning
+                    ? <><RefreshCw size={13} style={{ animation: 'spin 1s linear infinite' }} /> Resetting…</>
+                    : <><AlertTriangle size={13} /> Factory Reset</>
+                  }
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ── TAB: Developer ─────────────────────────────────────────────────────────
+
+  const renderDeveloper = () => (
+    <div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+      <div className="panel">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem' }}>
+          <h2 style={{ fontFamily: 'var(--display-font)', fontWeight: 600, fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0 }}>
+            <TerminalIcon size={16} color="var(--color-accent)" /> Runtime Logs
+          </h2>
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{logs.length} lines</span>
+            <button className="btn-secondary" style={{ fontSize: '0.8rem' }} onClick={fetchLogs}>
+              <RefreshCw size={13} /> Refresh
+            </button>
+          </div>
+        </div>
+        <div className="console-monitor" ref={consoleRef} style={{ height: 'calc(100vh - 260px)', maxHeight: 800 }}>
+          {logs.length === 0
+            ? <div style={{ color: 'var(--text-muted)' }}>No logs yet. Start a campaign to generate log output.</div>
+            : logs.map((log, i) => {
+              let cls = 'console-line';
+              if (log.includes('[ERROR]') || log.includes('Failed') || log.includes('failed')) cls += ' console-line-error';
+              else if (log.includes('[WARNING]')) cls += ' console-line-warn';
+              return <div key={i} className={cls}>{log}</div>;
+            })
+          }
+        </div>
+      </div>
     </div>
   );
 
   // ── Root render ────────────────────────────────────────────────────────────
+
+  const tabs = [
+    { id: 'campaign',        label: 'Campaign',          Icon: Play },
+    { id: 'qualified-leads', label: 'Qualified Leads',   Icon: CheckCircle2 },
+    { id: 'opportunities',   label: 'Opportunities',     Icon: TrendingUp },
+    { id: 'businesses',      label: 'Business Registry', Icon: Building2 },
+    { id: 'analytics',       label: 'Analytics',         Icon: BarChart3 },
+    { id: 'settings',        label: 'Settings',          Icon: Settings },
+    { id: 'developer',       label: 'Developer',         Icon: TerminalIcon },
+  ];
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
@@ -989,13 +1693,13 @@ export default function App() {
         <div className="brand-container">
           <Database className="brand-icon" />
           <h1 className="brand-title">LeadForge</h1>
-          <span className="brand-badge">MVP V1.0</span>
+          <span className="brand-badge">V3.2</span>
         </div>
-        <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+        <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
           {status.is_running
             ? <span style={{ color: 'var(--color-accent)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <span className="pulse-button" style={{ display: 'inline-block', width: 8, height: 8, background: 'var(--color-accent)', borderRadius: '50%' }} />
-                Scraper Active
+                <span className="pulse-button" style={{ display: 'inline-block', width: 7, height: 7, background: 'var(--color-accent)', borderRadius: '50%' }} />
+                Campaign Active
               </span>
             : <span style={{ color: 'var(--text-muted)' }}>System Idle</span>
           }
@@ -1006,16 +1710,19 @@ export default function App() {
         {tabs.map(({ id, label, Icon }) => (
           <button key={id} className={`tab ${activeTab === id ? 'tab-active' : ''}`}
             onClick={() => setActiveTab(id)}>
-            <Icon size={15} />{label}
+            <Icon size={14} />{label}
           </button>
         ))}
       </nav>
 
       <main style={{ flexGrow: 1 }}>
-        {activeTab === 'discover'      && renderDiscover()}
-        {activeTab === 'leads'         && renderLeads()}
-        {activeTab === 'opportunities' && renderOpportunities()}
-        {activeTab === 'businesses'    && renderBusinesses()}
+        {activeTab === 'campaign'        && renderCampaign()}
+        {activeTab === 'qualified-leads' && renderQualifiedLeads()}
+        {activeTab === 'opportunities'   && renderOpportunities()}
+        {activeTab === 'businesses'      && renderBusinessRegistry()}
+        {activeTab === 'analytics'       && renderAnalytics()}
+        {activeTab === 'settings'        && renderSettings()}
+        {activeTab === 'developer'       && renderDeveloper()}
       </main>
     </div>
   );

@@ -5,6 +5,7 @@ from leadforge.utils import deduplicate_leads, get_logger
 
 logger = get_logger()
 
+
 def score_lead(lead: Dict[str, Any]) -> Dict[str, Any]:
     """
     Score a single business based on the digital presence rules:
@@ -37,7 +38,9 @@ def process_and_score_leads(leads: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     """
     # 1. Deduplicate
     unique_leads = deduplicate_leads(leads)
-    logger.info(f"Deduplicated raw leads: {len(leads)} -> {len(unique_leads)} unique listings.")
+    logger.info(
+        f"Deduplicated raw leads: {len(leads)} -> {len(unique_leads)} unique listings."
+    )
 
     # 2. Score
     scored_leads = [score_lead(lead) for lead in unique_leads]

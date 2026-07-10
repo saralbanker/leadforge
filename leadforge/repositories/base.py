@@ -1,8 +1,10 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
 
+
 class RepositoryException(Exception):
     """Base exception class for all repository errors."""
+
     pass
 
 
@@ -48,6 +50,7 @@ class OpportunityRepositoryInterface(ABC):
         """Returns all scoring-log rows for a given opportunity."""
         pass
 
+
 class SettingsRepositoryInterface(ABC):
     @abstractmethod
     def get(self, key: str) -> Optional[str]:
@@ -59,14 +62,37 @@ class SettingsRepositoryInterface(ABC):
         """Sets/updates value for a given key."""
         pass
 
+
 class SearchHistoryRepositoryInterface(ABC):
     @abstractmethod
-    def create(self, city: str, category: str, results_count: int, status: str, search_query: Optional[str] = None, limit_requested: Optional[int] = None, started_at: Optional[str] = None, scraper_version: Optional[str] = "2.0") -> str:
+    def create(
+        self,
+        city: str,
+        category: str,
+        results_count: int,
+        status: str,
+        search_query: Optional[str] = None,
+        limit_requested: Optional[int] = None,
+        started_at: Optional[str] = None,
+        scraper_version: Optional[str] = "2.0",
+    ) -> str:
         """Logs a search run history, returning its generated UUIDv7."""
         pass
 
     @abstractmethod
-    def complete(self, search_id: str, results_count: int, new_count: int, updated_count: int, failed_count: int, duplicate_count: int, finished_at: str, duration: float, status: str = "COMPLETED", metadata: Optional[str] = None):
+    def complete(
+        self,
+        search_id: str,
+        results_count: int,
+        new_count: int,
+        updated_count: int,
+        failed_count: int,
+        duplicate_count: int,
+        finished_at: str,
+        duration: float,
+        status: str = "COMPLETED",
+        metadata: Optional[str] = None,
+    ):
         """Updates search run details upon completion."""
         pass
 
@@ -75,9 +101,15 @@ class SearchHistoryRepositoryInterface(ABC):
         """Lists all search history entries sorted by created_at descending."""
         pass
 
+
 class LeadRepositoryInterface(ABC):
     @abstractmethod
-    def save_lead_transaction(self, lead_data: Dict[str, Any], campaign_name: str, search_id: Optional[str] = None) -> str:
+    def save_lead_transaction(
+        self,
+        lead_data: Dict[str, Any],
+        campaign_name: str,
+        search_id: Optional[str] = None,
+    ) -> str:
         """
         Saves a single lead transactionally into the DB.
         Inserts/updates businesses, addresses, digital_presences, leads, and opportunities.
@@ -94,7 +126,9 @@ class LeadRepositoryInterface(ABC):
         pass
 
     @abstractmethod
-    def check_duplicate(self, google_place_id: Optional[str], name: str, phone: Optional[str]) -> bool:
+    def check_duplicate(
+        self, google_place_id: Optional[str], name: str, phone: Optional[str]
+    ) -> bool:
         """
         Deduplicates against historical database records.
         """

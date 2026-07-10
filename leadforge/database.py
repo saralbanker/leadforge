@@ -2,19 +2,22 @@ import sqlite3
 import os
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 import pandas as pd
 from leadforge.config import BASE_DIR, OUTPUT_DIR
 from leadforge.utils import get_logger, clean_text
+from leadforge.normalizer import canonical_phone
 
 logger = get_logger()
 DB_PATH = BASE_DIR / "leadforge.db"
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 
+
 def uuidv7() -> str:
     """Generates a UUIDv7 string (36 characters) conforming to time-ordered UUIDv7 standard."""
     ms = int(time.time() * 1000)
-    msec_bytes = ms.to_bytes(6, byteorder='big')
+    msec_bytes = ms.to_bytes(6, byteorder="big")
     rand = os.urandom(10)
 
     h = bytearray(16)
@@ -28,6 +31,7 @@ def uuidv7() -> str:
 
     return str(uuid.UUID(bytes=bytes(h)))
 
+
 def get_db_connection() -> sqlite3.Connection:
     """Establishes connection to the SQLite database and configures WAL/FKs."""
     conn = sqlite3.connect(DB_PATH)
@@ -39,6 +43,7 @@ def get_db_connection() -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous = NORMAL;")
 
     return conn
+
 
 def initialize_database():
     """Initializes database, runs pending migrations, and triggers legacy Excel bootstrap."""
@@ -64,18 +69,24 @@ def initialize_database():
 
                 # Check if migration is already applied
                 cursor = conn.cursor()
-                cursor.execute("SELECT 1 FROM migration_history WHERE migration_name = ?", (name,))
+                cursor.execute(
+                    "SELECT 1 FROM migration_history WHERE migration_name = ?", (name,)
+                )
                 if cursor.fetchone() is None:
                     logger.info(f"Applying migration: {name}")
                     with open(filepath, "r", encoding="utf-8") as f:
                         sql_script = f.read()
 
                     try:
-                        conn.execute("BEGIN TRANSACTION;")
+                        # executescript() handles BEGIN…END trigger blocks correctly.
+                        # It issues an implicit COMMIT before running, so the
+                        # migration_history INSERT follows in a separate execute().
+                        # All migration SQL uses IF NOT EXISTS / OR IGNORE, so a
+                        # re-run on next startup is always a safe no-op.
                         conn.executescript(sql_script)
                         conn.execute(
                             "INSERT INTO migration_history (id, migration_name) VALUES (?, ?);",
-                            (uuidv7(), name)
+                            (uuidv7(), name),
                         )
                         conn.commit()
                         logger.info(f"Migration {name} applied successfully.")
@@ -90,13 +101,16 @@ def initialize_database():
     finally:
         conn.close()
 
+
 def bootstrap_legacy_data(conn: sqlite3.Connection):
     """Checks if the database is empty and performs a one-time import of legacy Excel exports."""
     # Check if there are any businesses in the database
     cursor = conn.cursor()
 
     # We first verify if businesses table exists
-    cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='businesses'")
+    cursor.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='businesses'"
+    )
     if cursor.fetchone()[0] == 0:
         return
 
@@ -108,7 +122,9 @@ def bootstrap_legacy_data(conn: sqlite3.Connection):
         return
 
     # Check if settings table exists
-    cursor.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='settings'")
+    cursor.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='settings'"
+    )
     if cursor.fetchone()[0] == 0:
         return
 
@@ -119,13 +135,17 @@ def bootstrap_legacy_data(conn: sqlite3.Connection):
     if not excel_files:
         return
 
-    logger.info(f"Empty database detected. Found {len(excel_files)} legacy Excel files. Bootstrapping data...")
+    logger.info(
+        f"Empty database detected. Found {len(excel_files)} legacy Excel files. Bootstrapping data..."
+    )
 
     for filepath in excel_files:
         filename = filepath.name
 
         # Check if already imported
-        cursor.execute("SELECT value FROM settings WHERE key = ?", (f"imported_excel_{filename}",))
+        cursor.execute(
+            "SELECT value FROM settings WHERE key = ?", (f"imported_excel_{filename}",)
+        )
         if cursor.fetchone() is not None:
             continue
 
@@ -144,7 +164,7 @@ def bootstrap_legacy_data(conn: sqlite3.Connection):
                 "Area": "area",
                 "Priority": "priority",
                 "Notes": "notes",
-                "Discovery Date": "discovery_date"
+                "Discovery Date": "discovery_date",
             }
 
             # Re-map columns
@@ -164,13 +184,19 @@ def bootstrap_legacy_data(conn: sqlite3.Connection):
             _engine_payloads = []
 
             # Pre-fetch source and status IDs
-            cursor.execute("SELECT id FROM discovery_sources WHERE name = 'MANUAL_IMPORT'")
+            cursor.execute(
+                "SELECT id FROM discovery_sources WHERE name = 'MANUAL_IMPORT'"
+            )
             source_row = cursor.fetchone()
-            source_id = source_row[0] if source_row else "01907de3-bc42-7c89-8d76-5a507db4f112"
+            source_id = (
+                source_row[0] if source_row else "01907de3-bc42-7c89-8d76-5a507db4f112"
+            )
 
             cursor.execute("SELECT id FROM lead_statuses WHERE name = 'OPEN'")
             status_row = cursor.fetchone()
-            status_id = status_row[0] if status_row else "01907de3-bc42-7c89-8d76-5a507db4f556"
+            status_id = (
+                status_row[0] if status_row else "01907de3-bc42-7c89-8d76-5a507db4f556"
+            )
 
             # Create a search run history entry
             search_id = uuidv7()
@@ -180,18 +206,23 @@ def bootstrap_legacy_data(conn: sqlite3.Connection):
             city = parts[0] if len(parts) > 0 else "Unknown"
             category = parts[1] if len(parts) > 1 else "Unknown"
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO search_history (id, city, category, search_query, results_count, status, created_at)
                 VALUES (?, ?, ?, ?, ?, 'COMPLETED', ?)
-            """, (
-                search_id,
-                city,
-                category,
-                f"{category} in {city}",
-                len(records),
-                # Format file timestamp or use current
-                time.strftime('%Y-%m-%dT%H:%M:%fZ', time.gmtime(filepath.stat().st_mtime))
-            ))
+            """,
+                (
+                    search_id,
+                    city,
+                    category,
+                    f"{category} in {city}",
+                    len(records),
+                    # Format file timestamp or use current
+                    datetime.fromtimestamp(
+                        filepath.stat().st_mtime, tz=timezone.utc
+                    ).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                ),
+            )
 
             for row in records:
                 name = clean_text(row.get("name", ""))
@@ -205,27 +236,42 @@ def bootstrap_legacy_data(conn: sqlite3.Connection):
                 clean_text(row.get("priority", "Medium"))
                 category_name = clean_text(row.get("category", category))
 
-                # Check duplicate by name + phone or address
+                # Canonical deduplication: use normalized_phone column
                 normalized_name = name.strip().lower()
-                normalized_phone = phone.strip().replace(" ", "").replace("-", "")
+                norm_phone = canonical_phone(phone)
 
-                # Try to get existing business
-                cursor.execute("""
-                    SELECT id FROM businesses
-                    WHERE normalized_name = ? AND (
-                        (display_phone = ? AND display_phone != '') OR
-                        id IN (SELECT business_id FROM addresses WHERE address_line = ?)
+                # Try to get existing business by canonical phone, then name+address
+                biz_row = None
+                if len(norm_phone) >= 7:
+                    cursor.execute(
+                        "SELECT id FROM businesses WHERE normalized_phone = ?",
+                        (norm_phone,),
                     )
-                """, (normalized_name, normalized_phone, address))
+                    biz_row = cursor.fetchone()
 
-                biz_row = cursor.fetchone()
+                if not biz_row:
+                    cursor.execute(
+                        """
+                        SELECT b.id FROM businesses b
+                        WHERE b.normalized_name = ?
+                          AND EXISTS (
+                              SELECT 1 FROM addresses a
+                              WHERE a.business_id = b.id AND a.address_line = ?
+                          )
+                    """,
+                        (normalized_name, address),
+                    )
+                    biz_row = cursor.fetchone()
+
                 if biz_row:
                     business_id = biz_row[0]
                 else:
                     business_id = uuidv7()
 
                     # Ensure business type exists
-                    cursor.execute("SELECT id FROM business_types WHERE name = ?", (category_name,))
+                    cursor.execute(
+                        "SELECT id FROM business_types WHERE name = ?", (category_name,)
+                    )
                     bt_row = cursor.fetchone()
                     if bt_row:
                         business_type_id = bt_row[0]
@@ -233,63 +279,94 @@ def bootstrap_legacy_data(conn: sqlite3.Connection):
                         business_type_id = uuidv7()
                         cursor.execute(
                             "INSERT INTO business_types (id, name) VALUES (?, ?)",
-                            (business_type_id, category_name)
+                            (business_type_id, category_name),
                         )
 
-                    # Insert business
-                    cursor.execute("""
-                        INSERT INTO businesses (id, normalized_name, name, display_phone, business_type_id)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (business_id, normalized_name, name, phone, business_type_id))
+                    # Insert business with canonical phone
+                    cursor.execute(
+                        """
+                        INSERT INTO businesses (id, normalized_name, name, display_phone, normalized_phone, business_type_id)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                        (
+                            business_id,
+                            normalized_name,
+                            name,
+                            phone,
+                            norm_phone or None,
+                            business_type_id,
+                        ),
+                    )
 
                     # Insert address
-                    cursor.execute("""
+                    cursor.execute(
+                        """
                         INSERT INTO addresses (id, business_id, address_line, area, city, state, postal_code)
                         VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, (uuidv7(), business_id, address, area, city, "Gujarat", ""))
+                    """,
+                        (uuidv7(), business_id, address, area, city, "", ""),
+                    )
 
                     # Insert digital presence
-                    cursor.execute("""
+                    cursor.execute(
+                        """
                         INSERT INTO digital_presences (id, business_id, website_url, has_website)
                         VALUES (?, ?, ?, ?)
-                    """, (uuidv7(), business_id, website, 1 if website else 0))
+                    """,
+                        (uuidv7(), business_id, website, 1 if website else 0),
+                    )
 
-                # Insert lead linked to this campaign/filename
-                cursor.execute("""
-                    INSERT INTO leads (id, business_id, source_id, status_id, campaign_name)
+                # INSERT OR IGNORE: one lead row per (business, campaign)
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO leads (id, business_id, source_id, status_id, campaign_name)
                     VALUES (?, ?, ?, ?, ?)
-                """, (uuidv7(), business_id, source_id, status_id, filename))
+                """,
+                    (uuidv7(), business_id, source_id, status_id, filename),
+                )
 
                 # Collect engine payload for post-commit dispatch.
-                _engine_payloads.append({
-                    "business_id": business_id,
-                    "name": name,
-                    "category": category_name,
-                    "website": website,
-                    "contact_email": "",
-                    "phone": phone,
-                    "rating": None,
-                    "review_count": None,
-                    "business_status": "OPERATIONAL",
-                    "categories": "",
-                })
+                _engine_payloads.append(
+                    {
+                        "business_id": business_id,
+                        "name": name,
+                        "category": category_name,
+                        "website": website,
+                        "contact_email": "",
+                        "phone": phone,
+                        "rating": None,
+                        "review_count": None,
+                        "business_status": "OPERATIONAL",
+                        "categories": "",
+                    }
+                )
 
             # Mark file as imported in settings
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT OR REPLACE INTO settings (id, key, value, description)
                 VALUES (?, ?, 'true', ?)
-            """, (uuidv7(), f"imported_excel_{filename}", f"Bootstrap imported legacy data from {filename}"))
+            """,
+                (
+                    uuidv7(),
+                    f"imported_excel_{filename}",
+                    f"Bootstrap imported legacy data from {filename}",
+                ),
+            )
 
             conn.commit()
             logger.info(f"Successfully bootstrap imported {filename} into SQLite.")
 
             # Engine calls run after commit using separate connections (avoids lock).
             from leadforge.opportunity_engine import OpportunityIntelligenceEngine
+
             for payload in _engine_payloads:
                 try:
                     OpportunityIntelligenceEngine().generate_for_business(payload)
                 except Exception as eng_err:
-                    logger.warning(f"Opportunity generation failed for {payload.get('name')}: {eng_err}")
+                    logger.warning(
+                        f"Opportunity generation failed for {payload.get('name')}: {eng_err}"
+                    )
 
         except Exception as e:
             conn.rollback()

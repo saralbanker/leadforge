@@ -1,16 +1,31 @@
 from typing import List, Dict, Any, Optional
-import re
 from urllib.parse import urlparse
 from datetime import datetime, timezone
+import json
 from leadforge.database import get_db_connection, uuidv7
 from leadforge.repositories.base import LeadRepositoryInterface, RepositoryException
-from leadforge.utils import clean_text
+from leadforge.utils import clean_text, extract_place_id
 from leadforge.normalizer import (
-    normalize_phone,
-    normalize_domain,
+    canonical_phone,
     normalize_category,
-    normalize_status
+    normalize_status,
 )
+
+# Whitelist of column names allowed in dynamic UPDATE clauses in save_merged_lead.
+_ALLOWED_MERGE_COLUMNS = frozenset(
+    {
+        "google_place_id",
+        "display_phone",
+        "normalized_phone",
+        "website_domain",
+        "rating",
+        "review_count",
+        "business_status",
+        "opening_hours",
+        "categories",
+    }
+)
+
 
 def extract_domain(url: str) -> str:
     """Helper to extract clean, normalized domain string from URL."""
@@ -27,40 +42,47 @@ def extract_domain(url: str) -> str:
     except Exception:
         return ""
 
+
 class SQLiteLeadRepository(LeadRepositoryInterface):
-    def check_duplicate(self, google_place_id: Optional[str], name: str, phone: Optional[str]) -> bool:
+    def check_duplicate(
+        self, google_place_id: Optional[str], name: str, phone: Optional[str]
+    ) -> bool:
+        """Single authoritative duplicate check.
+
+        Priority:
+          1. Google Place ID exact match — strongest signal.
+          2. canonical_phone exact match against indexed normalized_phone column.
+          3. normalized_name + canonical_phone — name-based fallback.
+        """
         conn = get_db_connection()
         try:
             cursor = conn.cursor()
 
-            # 1. Check Google Place ID Match
+            # 1. Google Place ID (deterministic identifier)
             if google_place_id:
-                cursor.execute("SELECT 1 FROM businesses WHERE google_place_id = ?", (google_place_id,))
+                cursor.execute(
+                    "SELECT 1 FROM businesses WHERE google_place_id = ?",
+                    (google_place_id,),
+                )
                 if cursor.fetchone():
                     return True
 
-            # 2. Check Phone Number Match
-            normalized_phone = normalize_phone(phone)
-            if normalized_phone:
-                cursor.execute("""
-                    SELECT 1 FROM businesses
-                    WHERE display_phone IS NOT NULL AND display_phone != ''
-                      AND REPLACE(REPLACE(REPLACE(REPLACE(display_phone, ' ', ''), '-', ''), '(', ''), ')', '') = ?
-                """, (re.sub(r'[\s\-\(\)\+]', '', phone),))
+            # 2. Canonical phone — indexed, digits-only, format-independent
+            norm_phone = canonical_phone(phone)
+            if len(norm_phone) >= 7:
+                cursor.execute(
+                    "SELECT 1 FROM businesses WHERE normalized_phone = ?", (norm_phone,)
+                )
                 if cursor.fetchone():
                     return True
 
-            # 3. Check Website Domain Match
-            # Handled during transaction check since domain is not passed to check_duplicate signature
-
-            # 4. Check Name + Phone Match
-            normalized_name = name.strip().lower()
-            if phone:
-                cursor.execute("""
-                    SELECT 1 FROM businesses
-                    WHERE normalized_name = ?
-                      AND REPLACE(REPLACE(display_phone, ' ', ''), '-', '') = ?
-                """, (normalized_name, normalized_phone))
+            # 3. Name + phone fallback
+            normalized_name = (name or "").strip().lower()
+            if normalized_name and norm_phone:
+                cursor.execute(
+                    "SELECT 1 FROM businesses WHERE normalized_name = ? AND normalized_phone = ?",
+                    (normalized_name, norm_phone),
+                )
                 if cursor.fetchone():
                     return True
 
@@ -74,11 +96,10 @@ class SQLiteLeadRepository(LeadRepositoryInterface):
         conn = get_db_connection()
         try:
             cursor = conn.cursor()
-            # Phase 3: each business may have multiple opportunities.
-            # We surface one row per lead using the highest-scoring opportunity
-            # for the business, and the most recent scoring-log reason.
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT
+                    b.id                           AS business_id,
                     b.name,
                     COALESCE(bt.name, '')          AS category,
                     COALESCE(b.display_phone, '')  AS phone,
@@ -88,9 +109,9 @@ class SQLiteLeadRepository(LeadRepositoryInterface):
                     b.rating,
                     b.review_count,
                     COALESCE(best.score, 0)        AS score,
-                    best.pipeline_stage,
+                    COALESCE(o.title, '')          AS top_opportunity,
                     l.created_at                   AS discovery_date,
-                    osl.reason                     AS notes,
+                    MAX(osl.reason)                AS notes,
                     COALESCE(dm.grade, '')         AS maturity_grade,
                     COALESCE(dm.maturity_score, 0) AS maturity_score
                 FROM leads l
@@ -99,7 +120,7 @@ class SQLiteLeadRepository(LeadRepositoryInterface):
                 LEFT JOIN addresses a ON b.id = a.business_id AND a.is_primary = 1
                 LEFT JOIN digital_presences dp ON b.id = dp.business_id
                 LEFT JOIN (
-                    SELECT business_id, MAX(score) AS score, pipeline_stage
+                    SELECT business_id, MAX(score) AS score
                     FROM opportunities
                     WHERE deleted_at IS NULL
                     GROUP BY business_id
@@ -109,9 +130,11 @@ class SQLiteLeadRepository(LeadRepositoryInterface):
                 LEFT JOIN opportunity_scoring_logs osl ON o.id = osl.opportunity_id
                 LEFT JOIN digital_maturities dm ON b.id = dm.business_id
                 WHERE l.campaign_name = ?
-                GROUP BY l.id
+                GROUP BY b.id
                 ORDER BY COALESCE(best.score, 0) DESC
-            """, (campaign_name,))
+            """,
+                (campaign_name,),
+            )
             rows = cursor.fetchall()
 
             leads = []
@@ -119,7 +142,6 @@ class SQLiteLeadRepository(LeadRepositoryInterface):
                 score = row["score"] or 0
                 priority = "High" if score >= 60 else "Medium"
 
-                # Format discovery_date to YYYY-MM-DD
                 disc_date = ""
                 if row["discovery_date"]:
                     try:
@@ -127,85 +149,53 @@ class SQLiteLeadRepository(LeadRepositoryInterface):
                     except Exception:
                         disc_date = row["discovery_date"]
 
-                leads.append({
-                    "name": row["name"],
-                    "category": row["category"],
-                    "phone": row["phone"],
-                    "website": row["website"],
-                    "address": row["address"],
-                    "area": row["area"],
-                    "rating": row["rating"],
-                    "review_count": row["review_count"],
-                    "priority": priority,
-                    "score": score,
-                    "maturity_grade": row["maturity_grade"],
-                    "maturity_score": round(row["maturity_score"] or 0, 1),
-                    "notes": row["notes"] or "",
-                    "discovery_date": disc_date,
-                })
+                leads.append(
+                    {
+                        "business_id": row["business_id"],
+                        "name": row["name"],
+                        "category": row["category"],
+                        "phone": row["phone"],
+                        "website": row["website"],
+                        "address": row["address"],
+                        "area": row["area"],
+                        "rating": row["rating"],
+                        "review_count": row["review_count"],
+                        "priority": priority,
+                        "score": score,
+                        "top_opportunity": row["top_opportunity"],
+                        "maturity_grade": row["maturity_grade"],
+                        "maturity_score": round(row["maturity_score"] or 0, 1),
+                        "notes": row["notes"] or "",
+                        "discovery_date": disc_date,
+                    }
+                )
             return leads
         except Exception as e:
-            raise RepositoryException(f"Failed to query leads for campaign '{campaign_name}': {str(e)}")
+            raise RepositoryException(
+                f"Failed to query leads for campaign '{campaign_name}': {str(e)}"
+            )
         finally:
             conn.close()
 
-
-    def save_lead_transaction(self, lead_data: Dict[str, Any], campaign_name: str, search_id: Optional[str] = None) -> Dict[str, Any]:
-        # Collect engine payload after commit so we can call it with a clean connection.
-        _engine_payload: dict | None = None
-        _result_biz_id: str | None = None
-
+    def save_new_qualified_lead(
+        self,
+        lead_data: Dict[str, Any],
+        opp_drafts: List[Any],
+        maturity: Any,
+        campaign_name: str,
+        search_id: Optional[str] = None,
+    ) -> str:
+        """Atomically persists a new qualified business, address, presence, leads, maturity, and opportunities."""
         conn = get_db_connection()
         try:
             cursor = conn.cursor()
-
-            # Start transaction
             conn.execute("BEGIN TRANSACTION;")
 
-            # Get default discovery source ID
-            cursor.execute("SELECT id FROM discovery_sources WHERE name = 'SCRAPER'")
-            source_row = cursor.fetchone()
-            source_id = source_row[0] if source_row else "01907de3-bc42-7c89-8d76-5a507db4ef8f"
-
-            # Get default status ID
-            cursor.execute("SELECT id FROM lead_statuses WHERE name = 'OPEN'")
-            status_row = cursor.fetchone()
-            status_id = status_row[0] if status_row else "01907de3-bc42-7c89-8d76-5a507db4f556"
-
-            name = clean_text(lead_data.get("name", ""))
-            phone = clean_text(lead_data.get("phone", ""))
-            website = clean_text(lead_data.get("website", ""))
-            address = clean_text(lead_data.get("address", ""))
-            area = clean_text(lead_data.get("area", ""))
-            category_name = clean_text(lead_data.get("category", "General"))
-            source_url = lead_data.get("source_url", "")
-
-            # Scraper metadata fields (Phase 2)
-            rating = lead_data.get("rating")
-            review_count = lead_data.get("review_count")
-            business_status = clean_text(lead_data.get("business_status", ""))
-            opening_hours = lead_data.get("opening_hours", "")
-            categories = lead_data.get("categories", "")
-
-            # Normalize values before storage
-            normalized_name = name.strip().lower()
-            normalized_phone = normalize_phone(phone)
-            website_domain = normalize_domain(website)
-            normalized_status = normalize_status(business_status)
-            normalized_category = normalize_category(category_name)
-            now_str = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%fZ')
-
-            # Extract google place ID if URL matches Maps format
-            google_place_id = None
-            if source_url and "/maps/place/" in source_url:
-                match = re.search(r'1s(0x[a-fA-F0-9]+:0x[a-fA-F0-9]+)', source_url)
-                if match:
-                    google_place_id = match.group(1)
-                else:
-                    google_place_id = source_url
-
-            # Ensure business type exists
-            cursor.execute("SELECT id FROM business_types WHERE name = ?", (normalized_category,))
+            # 1. Ensure business type exists
+            category_name = normalize_category(lead_data.get("category", "General"))
+            cursor.execute(
+                "SELECT id FROM business_types WHERE name = ?", (category_name,)
+            )
             bt_row = cursor.fetchone()
             if bt_row:
                 business_type_id = bt_row[0]
@@ -213,269 +203,511 @@ class SQLiteLeadRepository(LeadRepositoryInterface):
                 business_type_id = uuidv7()
                 cursor.execute(
                     "INSERT INTO business_types (id, name) VALUES (?, ?)",
-                    (business_type_id, normalized_category)
+                    (business_type_id, category_name),
                 )
 
-            # --- Centralized Duplicate Detection Priority ---
-            business_id = None
+            # 2. Insert business
+            business_id = uuidv7()
+            now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            google_place_id = lead_data.get("google_place_id")
+            website_domain = lead_data.get("website_domain") or extract_domain(
+                lead_data.get("website", "")
+            )
 
-            # 1. Google Place ID
-            if google_place_id:
-                cursor.execute("SELECT id FROM businesses WHERE google_place_id = ?", (google_place_id,))
-                row = cursor.fetchone()
-                if row:
-                    business_id = row[0]
+            norm_phone = canonical_phone(lead_data.get("phone", ""))
 
-            # 2. Phone Number
-            if not business_id and normalized_phone:
-                cursor.execute("""
-                    SELECT id FROM businesses
-                    WHERE display_phone IS NOT NULL AND display_phone != ''
-                      AND REPLACE(REPLACE(REPLACE(REPLACE(display_phone, ' ', ''), '-', ''), '(', ''), ')', '') = ?
-                """, (re.sub(r'[\s\-\(\)\+]', '', phone),))
-                row = cursor.fetchone()
-                if row:
-                    business_id = row[0]
+            cursor.execute(
+                """
+                INSERT INTO businesses (
+                    id, google_place_id, website_domain, normalized_name, name,
+                    display_phone, normalized_phone, business_type_id,
+                    rating, review_count, business_status, opening_hours, categories,
+                    last_scraped_at, first_discovered_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                (
+                    business_id,
+                    google_place_id,
+                    website_domain,
+                    lead_data.get("name", "").strip().lower(),
+                    lead_data.get("name"),
+                    lead_data.get("phone"),
+                    norm_phone or None,
+                    business_type_id,
+                    lead_data.get("rating"),
+                    lead_data.get("review_count"),
+                    normalize_status(lead_data.get("business_status")),
+                    lead_data.get("opening_hours"),
+                    lead_data.get("categories"),
+                    now_str,
+                    now_str,
+                ),
+            )
 
-            # 3. Website Domain
-            if not business_id and website_domain:
-                cursor.execute("SELECT id FROM businesses WHERE website_domain = ?", (website_domain,))
-                row = cursor.fetchone()
-                if row:
-                    business_id = row[0]
+            # 3. Insert Address
+            cursor.execute(
+                """
+                INSERT INTO addresses (id, business_id, address_line, area, city, state, postal_code)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+                (
+                    uuidv7(),
+                    business_id,
+                    lead_data.get("address"),
+                    lead_data.get("area"),
+                    lead_data.get("city", ""),
+                    lead_data.get("state", ""),
+                    lead_data.get("postal_code", "") or "",
+                ),
+            )
 
-            # 4. Name + Area
-            if not business_id and normalized_name and area:
-                cursor.execute("""
-                    SELECT b.id FROM businesses b
-                    JOIN addresses a ON b.id = a.business_id
-                    WHERE b.normalized_name = ? AND LOWER(TRIM(a.area)) = ?
-                """, (normalized_name, area.strip().lower()))
-                row = cursor.fetchone()
-                if row:
-                    business_id = row[0]
+            # 4. Insert Digital Presence
+            website = lead_data.get("website", "")
+            cursor.execute(
+                """
+                INSERT INTO digital_presences (id, business_id, website_url, has_website)
+                VALUES (?, ?, ?, ?)
+            """,
+                (uuidv7(), business_id, website, 1 if website else 0),
+            )
 
-            # 5. Name + Address
-            if not business_id and normalized_name and address:
-                cursor.execute("""
-                    SELECT b.id FROM businesses b
-                    JOIN addresses a ON b.id = a.business_id
-                    WHERE b.normalized_name = ? AND LOWER(TRIM(a.address_line)) = ?
-                """, (normalized_name, address.strip().lower()))
-                row = cursor.fetchone()
-                if row:
-                    business_id = row[0]
+            # 5. Insert Lead entry
+            cursor.execute("SELECT id FROM discovery_sources WHERE name = 'SCRAPER'")
+            source_row = cursor.fetchone()
+            source_id = (
+                source_row[0] if source_row else "01907de3-bc42-7c89-8d76-5a507db4ef8f"
+            )
 
-            save_status = "inserted"
-            if business_id:
-                # Deduplication conflict checking & merge logic (Phase 2)
-                cursor.execute("""
-                    SELECT google_place_id, display_phone, website_domain, rating, review_count, business_status, opening_hours, categories
-                    FROM businesses WHERE id = ?
-                """, (business_id,))
-                db_row = cursor.fetchone()
+            cursor.execute("SELECT id FROM lead_statuses WHERE name = 'OPEN'")
+            status_row = cursor.fetchone()
+            status_id = (
+                status_row[0] if status_row else "01907de3-bc42-7c89-8d76-5a507db4f556"
+            )
 
-                db_place_id = db_row["google_place_id"]
-                db_phone = db_row["display_phone"]
-                db_domain = db_row["website_domain"]
-                db_rating = db_row["rating"]
-                db_reviews = db_row["review_count"]
-                db_status = db_row["business_status"]
-                db_hours = db_row["opening_hours"]
-                db_categories = db_row["categories"]
+            # INSERT OR IGNORE: the unique index idx_leads_unique_business_campaign
+            # enforces at most one row per (business_id, campaign_name).
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO leads (id, business_id, source_id, status_id, campaign_name, search_history_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """,
+                (uuidv7(), business_id, source_id, status_id, campaign_name, search_id),
+            )
 
-                updates = {}
-                conflicts = []
+            # 6. Insert Digital Maturity
+            if maturity:
+                cursor.execute(
+                    """
+                    INSERT INTO digital_maturities (id, business_id, maturity_score, grade, details_json, audited_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                    (
+                        uuidv7(),
+                        business_id,
+                        maturity.score,
+                        maturity.grade,
+                        json.dumps(
+                            {
+                                "gaps": maturity.gaps,
+                                "strengths": maturity.strengths,
+                                "data_completeness": maturity.data_completeness,
+                                "dimensions": [
+                                    {
+                                        "name": d.name,
+                                        "score": d.score,
+                                        "max_score": d.max_score,
+                                        "gap": d.gap,
+                                        "detail": d.detail,
+                                    }
+                                    for d in maturity.dimensions
+                                ],
+                            }
+                        ),
+                        now_str,
+                    ),
+                )
 
-                # Merge Google Place ID
-                if google_place_id:
-                    if not db_place_id:
-                        updates["google_place_id"] = google_place_id
-                    elif db_place_id != google_place_id:
-                        conflicts.append(("google_place_id", db_place_id, google_place_id))
+            # 7. Insert Opportunities and scoring logs
+            if opp_drafts:
+                for opp in opp_drafts:
+                    opp_id = uuidv7()
+                    cursor.execute(
+                        """
+                        INSERT INTO opportunities
+                            (id, business_id, title, pipeline_stage, score, close_probability, estimated_value)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                        (
+                            opp_id,
+                            business_id,
+                            opp.title,
+                            opp.pipeline_stage,
+                            opp.score,
+                            opp.close_probability,
+                            opp.estimated_value,
+                        ),
+                    )
 
-                # Merge Phone Number
-                if phone:
-                    if not db_phone:
-                        updates["display_phone"] = phone
-                    elif normalize_phone(db_phone) != normalized_phone:
-                        conflicts.append(("display_phone", db_phone, phone))
+                    for entry in opp.signals:
+                        cursor.execute(
+                            """
+                            INSERT INTO opportunity_scoring_logs
+                                (id, opportunity_id, rule_name, score_delta, reason)
+                            VALUES (?, ?, ?, ?, ?)
+                        """,
+                            (
+                                uuidv7(),
+                                opp_id,
+                                entry.rule_name,
+                                entry.score_delta,
+                                entry.reason,
+                            ),
+                        )
 
-                # Merge Website Domain
-                if website_domain:
-                    if not db_domain:
-                        updates["website_domain"] = website_domain
-                    elif db_domain != website_domain:
-                        conflicts.append(("website_domain", db_domain, website_domain))
+            # 8. Update search history count
+            if search_id:
+                cursor.execute(
+                    """
+                    UPDATE search_history
+                    SET new_businesses = COALESCE(new_businesses, 0) + 1
+                    WHERE id = ?
+                """,
+                    (search_id,),
+                )
 
-                # Merge Scraper Metrics (Rating, Reviews, Status, Hours, Categories)
-                if rating is not None:
-                    if db_rating is None:
-                        updates["rating"] = rating
-                    elif db_rating != rating:
-                        conflicts.append(("rating", str(db_rating), str(rating)))
+            conn.commit()
+            return business_id
+        except Exception as e:
+            conn.rollback()
+            raise RepositoryException(f"Failed to save qualified lead: {str(e)}")
+        finally:
+            conn.close()
 
-                if review_count is not None:
-                    if db_reviews is None:
-                        updates["review_count"] = review_count
-                    elif db_reviews != review_count:
-                        conflicts.append(("review_count", str(db_reviews), str(review_count)))
+    def save_merged_lead(
+        self,
+        business_id: str,
+        updates: Dict[str, Any],
+        conflicts: List[tuple],
+        lead_data: Dict[str, Any],
+        campaign_name: str,
+        search_id: Optional[str] = None,
+        link_to_campaign: bool = True,
+    ) -> None:
+        """Atomically merges business fields, audits conflicts, and links a new lead entry.
 
-                if normalized_status:
-                    if not db_status:
-                        updates["business_status"] = normalized_status
-                    elif db_status != normalized_status:
-                        conflicts.append(("business_status", db_status, normalized_status))
+        link_to_campaign=False: merge business data only; do not insert a leads
+        row for this campaign.  Used by the control plane for historical duplicates
+        that have not passed current-campaign validation.
+        """
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            conn.execute("BEGIN TRANSACTION;")
 
-                if opening_hours:
-                    if not db_hours:
-                        updates["opening_hours"] = opening_hours
-                    elif db_hours != opening_hours:
-                        conflicts.append(("opening_hours", db_hours, opening_hours))
+            now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
-                if categories:
-                    if not db_categories:
-                        updates["categories"] = categories
-                    elif db_categories != categories:
-                        conflicts.append(("categories", db_categories, categories))
-
-                # Apply updates to empty fields
-                if updates:
-                    set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
+            # 1. Apply updates to fields — restrict to whitelisted columns
+            if updates:
+                # If display_phone is being updated, keep normalized_phone in sync
+                if "display_phone" in updates:
+                    updates["normalized_phone"] = (
+                        canonical_phone(updates["display_phone"]) or None
+                    )
+                safe_updates = {
+                    k: v for k, v in updates.items() if k in _ALLOWED_MERGE_COLUMNS
+                }
+                if safe_updates:
+                    set_clause = ", ".join([f"{k} = ?" for k in safe_updates.keys()])
                     cursor.execute(
                         f"UPDATE businesses SET {set_clause}, last_scraped_at = ? WHERE id = ?",
-                        list(updates.values()) + [now_str, business_id]
+                        list(safe_updates.values()) + [now_str, business_id],
                     )
                     save_status = "updated"
                 else:
                     cursor.execute(
                         "UPDATE businesses SET last_scraped_at = ? WHERE id = ?",
-                        (now_str, business_id)
+                        (now_str, business_id),
                     )
                     save_status = "duplicate"
+            else:
+                cursor.execute(
+                    "UPDATE businesses SET last_scraped_at = ? WHERE id = ?",
+                    (now_str, business_id),
+                )
+                save_status = "duplicate"
+            # 2. Record conflicts to audit logs and timeline
+            if conflicts:
+                conflict_desc = ", ".join(
+                    [
+                        f"{field}: '{before}' vs '{after}'"
+                        for field, before, after in conflicts
+                    ]
+                )
 
-                # Log conflicts to audit_logs and activity_timeline
-                if conflicts:
-                    conflict_desc = ", ".join([f"{field}: '{before}' vs '{after}'" for field, before, after in conflicts])
-
-                    # Record audit log
-                    for field, before, after in conflicts:
-                        cursor.execute("""
-                            INSERT INTO audit_logs (id, entity_type, entity_id, action_type, actor, before_state_json, after_state_json, client_metadata_json, occurred_at)
-                            VALUES (?, 'businesses', ?, 'UPDATE', 'scraper', ?, ?, ?, ?)
-                        """, (
+                # Record audit log
+                for field, before, after in conflicts:
+                    cursor.execute(
+                        """
+                        INSERT INTO audit_logs (id, entity_type, entity_id, action_type, actor, before_state_json, after_state_json, client_metadata_json, occurred_at)
+                        VALUES (?, 'businesses', ?, 'UPDATE', 'scraper', ?, ?, ?, ?)
+                    """,
+                        (
                             uuidv7(),
                             business_id,
                             f'{{"{field}": "{before}"}}',
                             f'{{"{field}": "{after}"}}',
                             '{"conflict": true, "reason": "Conflict detected during scraper pipeline run"}',
-                            now_str
-                        ))
+                            now_str,
+                        ),
+                    )
 
-                    # Record timeline event
-                    cursor.execute("""
-                        INSERT INTO activity_timeline (id, business_id, activity_type, title, description, occurred_at)
-                        VALUES (?, ?, 'NOTE_ADDED', 'Data Conflict Detected', ?, ?)
-                    """, (
+                # Record timeline event
+                cursor.execute(
+                    """
+                    INSERT INTO activity_timeline (id, business_id, activity_type, title, description, occurred_at)
+                    VALUES (?, ?, 'NOTE_ADDED', 'Data Conflict Detected', ?, ?)
+                """,
+                    (
                         uuidv7(),
                         business_id,
                         f"Scraped new values that conflict with existing values: {conflict_desc}",
-                        now_str
-                    ))
-            else:
-                # Business does not exist, insert new business record
-                business_id = uuidv7()
-                cursor.execute("""
-                    INSERT INTO businesses (
-                        id, google_place_id, website_domain, normalized_name, name, display_phone, business_type_id,
-                        rating, review_count, business_status, opening_hours, categories, last_scraped_at, first_discovered_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    business_id,
-                    google_place_id,
-                    website_domain,
-                    normalized_name,
-                    name,
-                    phone,
-                    business_type_id,
-                    rating,
-                    review_count,
-                    normalized_status,
-                    opening_hours,
-                    categories,
-                    now_str,
-                    now_str
-                ))
+                        now_str,
+                    ),
+                )
 
-                # Insert address
-                cursor.execute("""
-                    INSERT INTO addresses (id, business_id, address_line, area, city, state, postal_code)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (uuidv7(), business_id, address, area, "Ahmedabad", "Gujarat", ""))
+            # 3. Link campaign — only when the business has passed campaign validation.
+            if link_to_campaign:
+                cursor.execute(
+                    "SELECT id FROM discovery_sources WHERE name = 'SCRAPER'"
+                )
+                source_row = cursor.fetchone()
+                source_id = (
+                    source_row[0]
+                    if source_row
+                    else "01907de3-bc42-7c89-8d76-5a507db4ef8f"
+                )
 
-                # Insert digital presence
-                cursor.execute("""
-                    INSERT INTO digital_presences (id, business_id, website_url, has_website)
-                    VALUES (?, ?, ?, ?)
-                """, (uuidv7(), business_id, website, 1 if website else 0))
+                cursor.execute("SELECT id FROM lead_statuses WHERE name = 'OPEN'")
+                status_row = cursor.fetchone()
+                status_id = (
+                    status_row[0]
+                    if status_row
+                    else "01907de3-bc42-7c89-8d76-5a507db4f556"
+                )
 
-            # Insert lead entry linked to campaign and search_history_id
-            cursor.execute("""
-                INSERT INTO leads (id, business_id, source_id, status_id, campaign_name, search_history_id)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (uuidv7(), business_id, source_id, status_id, campaign_name, search_id))
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO leads (id, business_id, source_id, status_id, campaign_name, search_history_id)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                    (
+                        uuidv7(),
+                        business_id,
+                        source_id,
+                        status_id,
+                        campaign_name,
+                        search_id,
+                    ),
+                )
 
-            # If search_id is provided, increment search run counts inside the transaction
+            # 4. Update search history counters
             if search_id:
-                if save_status == "inserted":
-                    cursor.execute("""
-                        UPDATE search_history
-                        SET new_businesses = COALESCE(new_businesses, 0) + 1
-                        WHERE id = ?
-                    """, (search_id,))
-                elif save_status == "updated":
-                    cursor.execute("""
+                if save_status == "updated":
+                    cursor.execute(
+                        """
                         UPDATE search_history
                         SET updated_businesses = COALESCE(updated_businesses, 0) + 1
                         WHERE id = ?
-                    """, (search_id,))
-                elif save_status == "duplicate":
-                    cursor.execute("""
+                    """,
+                        (search_id,),
+                    )
+                else:
+                    cursor.execute(
+                        """
                         UPDATE search_history
                         SET duplicate_detections = COALESCE(duplicate_detections, 0) + 1
                         WHERE id = ?
-                    """, (search_id,))
+                    """,
+                        (search_id,),
+                    )
 
             conn.commit()
-            # Capture engine payload before connection closes.
-            # The engine MUST run after commit so it can open its own clean connection.
-            _result_biz_id = business_id
-            _engine_payload = {
-                "business_id": business_id,
-                "name": name,
-                "category": normalized_category,
-                "website": website,
-                "contact_email": lead_data.get("contact_email", ""),
-                "phone": phone,
-                "rating": rating,
-                "review_count": review_count,
-                "business_status": normalized_status,
-                "categories": categories,
-            }
-            # Do NOT return here — let finally close the connection first.
         except Exception as e:
             conn.rollback()
-            raise RepositoryException(f"Failed to save lead transaction: {str(e)}")
+            raise RepositoryException(f"Failed to merge lead transaction: {str(e)}")
         finally:
             conn.close()
 
-        # Engine call happens after connection is fully closed.
-        # Failure here must never break lead persistence.
-        if _engine_payload:
-            self._post_commit_generate_opportunities(_engine_payload)
+    def save_lead_transaction(
+        self,
+        lead_data: Dict[str, Any],
+        campaign_name: str,
+        search_id: Optional[str] = None,
+    ) -> str:
+        """Backward-compatible transaction orchestrator for testing and legacy workflows."""
+        name = clean_text(lead_data.get("name", ""))
+        phone = clean_text(lead_data.get("phone", ""))
+        website = clean_text(lead_data.get("website", ""))
+        address = clean_text(lead_data.get("address", ""))
+        area = clean_text(lead_data.get("area", ""))
+        category_name = clean_text(lead_data.get("category", "General"))
+        source_url = lead_data.get("source_url", "")
+        rating = lead_data.get("rating")
+        review_count = lead_data.get("review_count")
+        business_status = clean_text(lead_data.get("business_status", ""))
+        opening_hours = lead_data.get("opening_hours", "")
+        categories = lead_data.get("categories", "")
 
-        return _result_biz_id
+        google_place_id = extract_place_id(source_url)
+
+        standard_lead = {
+            "name": name,
+            "phone": phone,
+            "website": website,
+            "address": address,
+            "area": area,
+            "category": category_name,
+            "source_url": source_url,
+            "google_place_id": google_place_id,
+            "rating": rating,
+            "review_count": review_count,
+            "business_status": business_status,
+            "opening_hours": opening_hours,
+            "categories": categories,
+        }
+
+        # Check duplicate
+        is_dup = self.check_duplicate(google_place_id, name, phone)
+        if is_dup:
+            business_id = self._find_existing_business_id(
+                google_place_id, name, phone, address, area
+            )
+            existing_biz = self._get_existing_business_by_id(business_id)
+            if existing_biz:
+                from leadforge.merge import BusinessMerger
+
+                merger = BusinessMerger()
+                updates, conflicts = merger.merge(existing_biz, standard_lead)
+                self.save_merged_lead(
+                    business_id,
+                    updates,
+                    conflicts,
+                    standard_lead,
+                    campaign_name,
+                    search_id,
+                )
+
+                # Perform post-commit opportunities check for backwards compatibility
+                self._post_commit_generate_opportunities(
+                    {
+                        "business_id": business_id,
+                        "name": name,
+                        "category": category_name,
+                        "website": website,
+                        "contact_email": lead_data.get("contact_email", ""),
+                        "phone": phone,
+                        "rating": rating,
+                        "review_count": review_count,
+                        "business_status": business_status,
+                        "categories": categories,
+                    }
+                )
+                return business_id
+
+        # New business! Evaluate opportunities & maturity using the engine
+        from leadforge.opportunity_engine import OpportunityIntelligenceEngine
+
+        engine = OpportunityIntelligenceEngine()
+        opp_drafts, maturity = engine.evaluate_opportunities(standard_lead)
+
+        business_id = self.save_new_qualified_lead(
+            standard_lead, opp_drafts, maturity, campaign_name, search_id
+        )
+        return business_id
+
+    def _find_existing_business_id(
+        self, google_place_id, name, phone, address, area
+    ) -> Optional[str]:
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            normalized_name = (name or "").strip().lower()
+            norm_phone = canonical_phone(phone)
+
+            # 1. Google Place ID
+            if google_place_id:
+                cursor.execute(
+                    "SELECT id FROM businesses WHERE google_place_id = ?",
+                    (google_place_id,),
+                )
+                row = cursor.fetchone()
+                if row:
+                    return row[0]
+
+            # 2. Canonical phone (indexed)
+            if len(norm_phone) >= 7:
+                cursor.execute(
+                    "SELECT id FROM businesses WHERE normalized_phone = ?",
+                    (norm_phone,),
+                )
+                row = cursor.fetchone()
+                if row:
+                    return row[0]
+
+            # 3. Name + Area
+            if normalized_name and area:
+                cursor.execute(
+                    """
+                    SELECT b.id FROM businesses b
+                    JOIN addresses a ON b.id = a.business_id
+                    WHERE b.normalized_name = ? AND LOWER(TRIM(a.area)) = ?
+                """,
+                    (normalized_name, area.strip().lower()),
+                )
+                row = cursor.fetchone()
+                if row:
+                    return row[0]
+
+            # 4. Name + Address
+            if normalized_name and address:
+                cursor.execute(
+                    """
+                    SELECT b.id FROM businesses b
+                    JOIN addresses a ON b.id = a.business_id
+                    WHERE b.normalized_name = ? AND LOWER(TRIM(a.address_line)) = ?
+                """,
+                    (normalized_name, address.strip().lower()),
+                )
+                row = cursor.fetchone()
+                if row:
+                    return row[0]
+
+            return None
+        finally:
+            conn.close()
+
+    def _get_existing_business_by_id(
+        self, business_id: str
+    ) -> Optional[Dict[str, Any]]:
+        if not business_id:
+            return None
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, google_place_id, name, display_phone, website_domain, rating, review_count, business_status, opening_hours, categories
+                FROM businesses WHERE id = ?
+            """,
+                (business_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+        finally:
+            conn.close()
 
     def _post_commit_generate_opportunities(self, engine_payload: dict) -> None:
         """Invokes the Intelligence Engine after the lead transaction has committed.
@@ -485,9 +717,9 @@ class SQLiteLeadRepository(LeadRepositoryInterface):
         """
         try:
             from leadforge.opportunity_engine import OpportunityIntelligenceEngine
+
             engine = OpportunityIntelligenceEngine()
             engine.generate_for_business(engine_payload)
         except Exception:
             # Opportunity generation failure must never break lead persistence.
             pass
-

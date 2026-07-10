@@ -1,7 +1,10 @@
 from typing import List, Dict, Any, Optional
 
 from leadforge.database import get_db_connection, uuidv7
-from leadforge.repositories.base import OpportunityRepositoryInterface, RepositoryException
+from leadforge.repositories.base import (
+    OpportunityRepositoryInterface,
+    RepositoryException,
+)
 
 
 class SQLiteOpportunityRepository(OpportunityRepositoryInterface):

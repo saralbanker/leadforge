@@ -1,12 +1,28 @@
 from typing import List, Dict, Any, Optional
+import json
 import time
 from datetime import datetime, timezone
 from leadforge.config import OUTPUT_DIR
 from leadforge.database import get_db_connection, uuidv7
-from leadforge.repositories.base import SearchHistoryRepositoryInterface, RepositoryException
+from leadforge.repositories.base import (
+    SearchHistoryRepositoryInterface,
+    RepositoryException,
+)
+
 
 class SQLiteSearchHistoryRepository(SearchHistoryRepositoryInterface):
-    def create(self, city: str, category: str, results_count: int, status: str, search_query: Optional[str] = None, limit_requested: Optional[int] = None, started_at: Optional[str] = None, scraper_version: Optional[str] = "2.0") -> str:
+    def create(
+        self,
+        city: str,
+        category: str,
+        results_count: int,
+        status: str,
+        search_query: Optional[str] = None,
+        limit_requested: Optional[int] = None,
+        started_at: Optional[str] = None,
+        scraper_version: Optional[str] = "2.0",
+        campaign_filename: Optional[str] = None,
+    ) -> str:
         conn = get_db_connection()
         try:
             cursor = conn.cursor()
@@ -15,39 +31,66 @@ class SQLiteSearchHistoryRepository(SearchHistoryRepositoryInterface):
                 search_query = f"{category} in {city}"
 
             if not started_at:
-                started_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%fZ')
+                started_at = datetime.now(timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%S.%fZ"
+                )
 
-            cursor.execute("""
+            initial_meta = (
+                json.dumps({"campaign_filename": campaign_filename})
+                if campaign_filename
+                else None
+            )
+
+            cursor.execute(
+                """
                 INSERT INTO search_history (
                     id, city, category, search_query, results_count, status, created_at,
-                    started_at, limit_requested, scraper_version
+                    started_at, limit_requested, scraper_version, scraper_metadata
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                search_id,
-                city,
-                category,
-                search_query,
-                results_count,
-                status,
-                started_at,
-                started_at,
-                limit_requested,
-                scraper_version or "1.0"
-            ))
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                (
+                    search_id,
+                    city,
+                    category,
+                    search_query,
+                    results_count,
+                    status,
+                    started_at,
+                    started_at,
+                    limit_requested,
+                    scraper_version or "1.0",
+                    initial_meta,
+                ),
+            )
             conn.commit()
             return search_id
         except Exception as e:
             conn.rollback()
-            raise RepositoryException(f"Failed to log search history for '{category}' in '{city}': {str(e)}")
+            raise RepositoryException(
+                f"Failed to log search history for '{category}' in '{city}': {str(e)}"
+            )
         finally:
             conn.close()
 
-    def complete(self, search_id: str, results_count: int, new_count: int, updated_count: int, failed_count: int, duplicate_count: int, finished_at: str, duration: float, status: str = "COMPLETED", metadata: Optional[str] = None):
+    def complete(
+        self,
+        search_id: str,
+        results_count: int,
+        new_count: int,
+        updated_count: int,
+        failed_count: int,
+        duplicate_count: int,
+        finished_at: str,
+        duration: float,
+        status: str = "COMPLETED",
+        metadata: Optional[str] = None,
+    ):
         conn = get_db_connection()
         try:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 UPDATE search_history
                 SET results_count = ?,
                     new_businesses = ?,
@@ -59,22 +102,26 @@ class SQLiteSearchHistoryRepository(SearchHistoryRepositoryInterface):
                     status = ?,
                     scraper_metadata = ?
                 WHERE id = ?
-            """, (
-                results_count,
-                new_count,
-                updated_count,
-                failed_count,
-                duplicate_count,
-                finished_at,
-                duration,
-                status,
-                metadata,
-                search_id
-            ))
+            """,
+                (
+                    results_count,
+                    new_count,
+                    updated_count,
+                    failed_count,
+                    duplicate_count,
+                    finished_at,
+                    duration,
+                    status,
+                    metadata,
+                    search_id,
+                ),
+            )
             conn.commit()
         except Exception as e:
             conn.rollback()
-            raise RepositoryException(f"Failed to update search history complete status for search '{search_id}': {str(e)}")
+            raise RepositoryException(
+                f"Failed to update search history complete status for search '{search_id}': {str(e)}"
+            )
         finally:
             conn.close()
 
@@ -83,7 +130,7 @@ class SQLiteSearchHistoryRepository(SearchHistoryRepositoryInterface):
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT city, category, results_count, status, created_at
+                SELECT city, category, results_count, status, created_at, scraper_metadata
                 FROM search_history
                 ORDER BY created_at DESC
             """)
@@ -94,10 +141,22 @@ class SQLiteSearchHistoryRepository(SearchHistoryRepositoryInterface):
                 city = row["city"]
                 category = row["category"]
 
-                # Format safety names matching main.py naming
-                safe_city = "".join([c if c.isalnum() else "_" for c in city])
-                safe_category = "".join([c if c.isalnum() else "_" for c in category])
-                filename = f"{safe_city}_{safe_category}.xlsx"
+                # Prefer the filename stored at campaign creation time; fall back to
+                # the legacy City_Category formula for records that predate D3.
+                meta: Dict[str, Any] = {}
+                if row["scraper_metadata"]:
+                    try:
+                        meta = json.loads(row["scraper_metadata"])
+                    except Exception:
+                        pass
+                if meta.get("campaign_filename"):
+                    filename = meta["campaign_filename"]
+                else:
+                    safe_city = "".join([c if c.isalnum() else "_" for c in city])
+                    safe_category = "".join(
+                        [c if c.isalnum() else "_" for c in category]
+                    )
+                    filename = f"{safe_city}_{safe_category}.xlsx"
 
                 # Check actual file size on disk for Excel downloads
                 filepath = OUTPUT_DIR / filename
@@ -119,14 +178,16 @@ class SQLiteSearchHistoryRepository(SearchHistoryRepositoryInterface):
                 except Exception:
                     created_at = time.time()
 
-                runs.append({
-                    "filename": filename,
-                    "size_bytes": size_bytes,
-                    "created_at": created_at,
-                    "city": city,
-                    "category": category,
-                    "status": row["status"]
-                })
+                runs.append(
+                    {
+                        "filename": filename,
+                        "size_bytes": size_bytes,
+                        "created_at": created_at,
+                        "city": city,
+                        "category": category,
+                        "status": row["status"],
+                    }
+                )
             return runs
         except Exception as e:
             raise RepositoryException(f"Failed to list search history: {str(e)}")

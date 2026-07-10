@@ -8,6 +8,7 @@ from leadforge.utils import get_logger
 
 logger = get_logger()
 
+
 def export_leads_to_excel(leads: List[Dict[str, Any]], filename: str) -> Path:
     """
     Exports the scored leads into a styled, professional Excel (.xlsx) file.
@@ -30,7 +31,7 @@ def export_leads_to_excel(leads: List[Dict[str, Any]], filename: str) -> Path:
         "area": "Area",
         "priority": "Priority",
         "notes": "Notes",
-        "discovery_date": "Discovery Date"
+        "discovery_date": "Discovery Date",
     }
 
     # Ensure all target columns exist, fill missing with empty
@@ -49,17 +50,23 @@ def export_leads_to_excel(leads: List[Dict[str, Any]], filename: str) -> Path:
         worksheet = writer.sheets["Leads"]
 
         # Color palettes
-        header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")  # Navy
+        header_fill = PatternFill(
+            start_color="1F4E79", end_color="1F4E79", fill_type="solid"
+        )  # Navy
         header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
 
-        high_priority_fill = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")  # Soft orange/red
-        medium_priority_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")  # Soft green
+        high_priority_fill = PatternFill(
+            start_color="FCE4D6", end_color="FCE4D6", fill_type="solid"
+        )  # Soft orange/red
+        medium_priority_fill = PatternFill(
+            start_color="E2EFDA", end_color="E2EFDA", fill_type="solid"
+        )  # Soft green
 
         thin_border = Border(
-            left=Side(style='thin', color='D9D9D9'),
-            right=Side(style='thin', color='D9D9D9'),
-            top=Side(style='thin', color='D9D9D9'),
-            bottom=Side(style='thin', color='D9D9D9')
+            left=Side(style="thin", color="D9D9D9"),
+            right=Side(style="thin", color="D9D9D9"),
+            top=Side(style="thin", color="D9D9D9"),
+            bottom=Side(style="thin", color="D9D9D9"),
         )
 
         # Format headers
@@ -67,12 +74,16 @@ def export_leads_to_excel(leads: List[Dict[str, Any]], filename: str) -> Path:
             cell = worksheet.cell(row=1, column=col_idx)
             cell.fill = header_fill
             cell.font = header_font
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.alignment = Alignment(
+                horizontal="center", vertical="center", wrap_text=True
+            )
             cell.border = thin_border
 
         # Format data cells
         for row_idx in range(2, len(leads) + 2):
-            priority_val = worksheet.cell(row=row_idx, column=7).value  # Column 7 is "Priority"
+            priority_val = worksheet.cell(
+                row=row_idx, column=7
+            ).value  # Column 7 is "Priority"
 
             # Determine fill color for the row based on priority
             row_fill = None
@@ -111,7 +122,9 @@ def export_leads_to_excel(leads: List[Dict[str, Any]], filename: str) -> Path:
                     max_len = len(val_str)
 
             # Add padding and limit width
-            worksheet.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 40)
+            worksheet.column_dimensions[col_letter].width = min(
+                max(max_len + 3, 12), 40
+            )
 
     logger.info(f"Successfully exported {len(leads)} leads to: {output_path}")
     return output_path
@@ -124,18 +137,18 @@ def export_intelligence_to_excel(leads: List[Dict[str, Any]], filename: str) -> 
     output_path = OUTPUT_DIR / filename
 
     column_mapping = {
-        "name":                  "Business Name",
-        "phone":                 "Phone",
-        "website":               "Website",
-        "category":              "Category",
-        "area":                  "Area",
-        "rating":                "Rating",
-        "review_count":          "Review Count",
-        "maturity_grade":        "Digital Maturity",
-        "priority":              "Priority",
-        "score":                 "Opportunity Score",
-        "top_opportunity":       "Top Opportunity",
-        "recommended_services":  "Recommended Services",
+        "name": "Business Name",
+        "phone": "Phone",
+        "website": "Website",
+        "category": "Category",
+        "area": "Area",
+        "rating": "Rating",
+        "review_count": "Review Count",
+        "maturity_grade": "Digital Maturity",
+        "priority": "Priority",
+        "score": "Opportunity Score",
+        "top_opportunity": "Top Opportunity",
+        "recommended_services": "Recommended Services",
     }
 
     df = pd.DataFrame(leads)
@@ -148,10 +161,16 @@ def export_intelligence_to_excel(leads: List[Dict[str, Any]], filename: str) -> 
         df_out.to_excel(writer, index=False, sheet_name="Intelligence Export")
         ws = writer.sheets["Intelligence Export"]
 
-        header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+        header_fill = PatternFill(
+            start_color="1F4E79", end_color="1F4E79", fill_type="solid"
+        )
         header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-        high_fill   = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")
-        medium_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+        high_fill = PatternFill(
+            start_color="FCE4D6", end_color="FCE4D6", fill_type="solid"
+        )
+        medium_fill = PatternFill(
+            start_color="E2EFDA", end_color="E2EFDA", fill_type="solid"
+        )
         thin_border = Border(
             left=Side(style="thin", color="D9D9D9"),
             right=Side(style="thin", color="D9D9D9"),
@@ -163,14 +182,20 @@ def export_intelligence_to_excel(leads: List[Dict[str, Any]], filename: str) -> 
             cell = ws.cell(row=1, column=col_idx)
             cell.fill = header_fill
             cell.font = header_font
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.alignment = Alignment(
+                horizontal="center", vertical="center", wrap_text=True
+            )
             cell.border = thin_border
 
         priority_col = list(column_mapping).index("priority") + 1
 
         for row_idx in range(2, len(leads) + 2):
             priority_val = ws.cell(row=row_idx, column=priority_col).value
-            row_fill = high_fill if priority_val == "High" else (medium_fill if priority_val == "Medium" else None)
+            row_fill = (
+                high_fill
+                if priority_val == "High"
+                else (medium_fill if priority_val == "Medium" else None)
+            )
 
             for col_idx in range(1, len(column_mapping) + 1):
                 cell = ws.cell(row=row_idx, column=col_idx)

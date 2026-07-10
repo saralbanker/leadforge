@@ -1,6 +1,5 @@
 """Digital Maturity Repository — persists assessments to digital_maturities table."""
 
-import json
 from typing import Any, Dict, Optional
 
 from leadforge.database import get_db_connection, uuidv7

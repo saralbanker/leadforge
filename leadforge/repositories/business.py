@@ -14,7 +14,7 @@ class SQLiteBusinessRepository:
     """
 
     _VALID_SORT = {"score", "name", "rating", "review_count", "maturity_score"}
-    _VALID_DIR  = {"asc", "desc"}
+    _VALID_DIR = {"asc", "desc"}
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -29,7 +29,9 @@ class SQLiteBusinessRepository:
     ) -> List[Dict[str, Any]]:
         """Return businesses with intelligence summary, suitable for the UI list view."""
         sort_col = sort_by if sort_by in self._VALID_SORT else "score"
-        sort_direction = sort_dir.lower() if sort_dir.lower() in self._VALID_DIR else "desc"
+        sort_direction = (
+            sort_dir.lower() if sort_dir.lower() in self._VALID_DIR else "desc"
+        )
 
         conn = get_db_connection()
         try:
@@ -38,7 +40,9 @@ class SQLiteBusinessRepository:
             where_clauses = ["b.deleted_at IS NULL"]
 
             if search:
-                where_clauses.append("(LOWER(b.name) LIKE ? OR LOWER(bt.name) LIKE ? OR LOWER(a.area) LIKE ?)")
+                where_clauses.append(
+                    "(LOWER(b.name) LIKE ? OR LOWER(bt.name) LIKE ? OR LOWER(a.area) LIKE ?)"
+                )
                 term = f"%{search.lower()}%"
                 params += [term, term, term]
 
@@ -54,10 +58,10 @@ class SQLiteBusinessRepository:
 
             # Map sort_col to actual SQL expression
             sort_expr = {
-                "score":         "COALESCE(best_opp.score, 0)",
-                "name":          "LOWER(b.name)",
-                "rating":        "COALESCE(b.rating, 0)",
-                "review_count":  "COALESCE(b.review_count, 0)",
+                "score": "COALESCE(best_opp.score, 0)",
+                "name": "LOWER(b.name)",
+                "rating": "COALESCE(b.rating, 0)",
+                "review_count": "COALESCE(b.review_count, 0)",
                 "maturity_score": "COALESCE(dm.maturity_score, 0)",
             }[sort_col]
 
@@ -78,7 +82,8 @@ class SQLiteBusinessRepository:
                     COALESCE(dm.grade, '') AS maturity_grade,
                     COALESCE(dm.maturity_score, 0.0) AS maturity_score,
                     COALESCE(best_opp.score, 0.0) AS top_score,
-                    COALESCE(best_opp.title, '') AS top_opportunity
+                    COALESCE(best_opp.title, '') AS top_opportunity,
+                    COALESCE(disc.discovery_count, 1) AS discovery_count
                 FROM businesses b
                 LEFT JOIN business_types bt ON b.business_type_id = bt.id
                 LEFT JOIN addresses a ON b.id = a.business_id AND a.is_primary = 1
@@ -89,6 +94,11 @@ class SQLiteBusinessRepository:
                       FROM opportunities WHERE deleted_at IS NULL
                      GROUP BY business_id
                 ) best_opp ON b.id = best_opp.business_id
+                LEFT JOIN (
+                    SELECT business_id, COUNT(DISTINCT campaign_name) AS discovery_count
+                      FROM leads
+                     GROUP BY business_id
+                ) disc ON b.id = disc.business_id
                 WHERE {where_sql}
                 ORDER BY {sort_expr} {sort_direction.upper()}
                 LIMIT ?
@@ -182,7 +192,9 @@ class SQLiteBusinessRepository:
 
             return detail
         except Exception as exc:
-            raise RepositoryException(f"Failed to get business detail for '{business_id}': {exc}")
+            raise RepositoryException(
+                f"Failed to get business detail for '{business_id}': {exc}"
+            )
         finally:
             conn.close()
 
@@ -225,7 +237,11 @@ class SQLiteBusinessRepository:
 
             where_sql = " AND ".join(where_clauses)
 
-            join_leads = "LEFT JOIN leads l ON b.id = l.business_id" if mode == "campaign" else ""
+            join_leads = (
+                "LEFT JOIN leads l ON b.id = l.business_id"
+                if mode == "campaign"
+                else ""
+            )
 
             cursor.execute(
                 f"""
@@ -269,21 +285,23 @@ class SQLiteBusinessRepository:
             results = []
             for row in rows:
                 score = row["top_score"] or 0
-                results.append({
-                    "name": row["name"],
-                    "phone": row["phone"],
-                    "website": row["website"],
-                    "category": row["category"],
-                    "area": row["area"],
-                    "rating": row["rating"],
-                    "review_count": row["review_count"],
-                    "maturity_grade": row["maturity_grade"],
-                    "maturity_score": round(row["maturity_score"] or 0, 1),
-                    "priority": "High" if score >= 60 else "Medium",
-                    "score": round(score, 1),
-                    "top_opportunity": row["top_opportunity"],
-                    "recommended_services": row["recommended_services"],
-                })
+                results.append(
+                    {
+                        "name": row["name"],
+                        "phone": row["phone"],
+                        "website": row["website"],
+                        "category": row["category"],
+                        "area": row["area"],
+                        "rating": row["rating"],
+                        "review_count": row["review_count"],
+                        "maturity_grade": row["maturity_grade"],
+                        "maturity_score": round(row["maturity_score"] or 0, 1),
+                        "priority": "High" if score >= 60 else "Medium",
+                        "score": round(score, 1),
+                        "top_opportunity": row["top_opportunity"],
+                        "recommended_services": row["recommended_services"],
+                    }
+                )
             return results
         except Exception as exc:
             raise RepositoryException(f"Failed to list businesses for export: {exc}")
@@ -311,4 +329,5 @@ class SQLiteBusinessRepository:
             "top_score": round(score, 1),
             "top_opportunity": row["top_opportunity"],
             "priority": "HIGH" if score >= 60 else ("MEDIUM" if score >= 28 else "LOW"),
+            "discovery_count": row["discovery_count"] or 1,
         }

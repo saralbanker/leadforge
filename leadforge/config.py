@@ -24,7 +24,33 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
+# Phone Normalisation
+# Change this for non-Indian deployments (e.g. "+1" for USA/Canada).
+DEFAULT_PHONE_COUNTRY_CODE = "+91"
+
+# City → postal-code (PIN) prefix mapping used for deterministic city validation.
+# Keys are lowercased city names; values are accepted 3-digit PIN prefixes.
+# Override at runtime with the CITY_PIN_PREFIXES setting (JSON object, same shape).
+DEFAULT_CITY_PIN_PREFIXES = {
+    "ahmedabad": ["380", "382"],
+    "gandhinagar": ["382"],
+    "surat": ["394", "395"],
+    "vadodara": ["390", "391"],
+    "baroda": ["390", "391"],
+    "rajkot": ["360"],
+    "mumbai": ["400"],
+    "pune": ["411", "412"],
+    "delhi": ["110"],
+    "new delhi": ["110"],
+    "bengaluru": ["560"],
+    "bangalore": ["560"],
+    "chennai": ["600"],
+    "hyderabad": ["500"],
+    "kolkata": ["700"],
+    "jaipur": ["302"],
+}
+
 # Playwright Scraper Settings
 HEADLESS_SCRAPING = True
 PLAYWRIGHT_TIMEOUT = 30000  # 30 seconds
-PLAYWRIGHT_SLOWMO = 500     # 500ms delay to prevent rate limits
+PLAYWRIGHT_SLOWMO = 0  # Disabled: smart waits replace artificial delays

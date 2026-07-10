@@ -1,9 +1,6 @@
-"""Service catalogue repository.
-
-Provides read access to the services table.
+"""Provides read access to the services table.
 All SQL stays here — never in the engine.
 """
-from typing import Optional
 
 from leadforge.database import get_db_connection
 from leadforge.repositories.base import RepositoryException
@@ -24,6 +21,8 @@ class SQLiteServiceRepository:
             row = cursor.fetchone()
             return float(row["base_price"]) if row else 0.0
         except Exception as exc:
-            raise RepositoryException(f"Failed to fetch base price for '{service_name}': {exc}")
+            raise RepositoryException(
+                f"Failed to fetch base price for '{service_name}': {exc}"
+            )
         finally:
             conn.close()

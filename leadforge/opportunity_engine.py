@@ -35,13 +35,16 @@ from leadforge.repositories.maturity import SQLiteDigitalMaturityRepository
 from leadforge.repositories.opportunity import SQLiteOpportunityRepository
 from leadforge.repositories.service import SQLiteServiceRepository
 from leadforge.repositories.settings import SQLiteSettingsRepository
+from leadforge.confidence_engine import ConfidenceEngine
 
 
 # ── Value objects ─────────────────────────────────────────────────────────────
 
+
 @dataclass(frozen=True)
 class ScoringSignal:
     """A single explainable contribution to an opportunity score."""
+
     rule_name: str
     score_delta: float
     reason: str
@@ -50,6 +53,7 @@ class ScoringSignal:
 @dataclass
 class OpportunityDraft:
     """All data required to persist one opportunity."""
+
     business_id: str
     title: str
     service_name: str
@@ -64,6 +68,7 @@ class OpportunityDraft:
 
 
 # ── Engine ────────────────────────────────────────────────────────────────────
+
 
 class OpportunityIntelligenceEngine:
     """Converts a business profile into one or more ranked opportunities.
@@ -104,16 +109,14 @@ class OpportunityIntelligenceEngine:
         """
         business_id: str = business_data.get("business_id", "")
         if not business_id:
-            return []
+            business_id = business_data.get("id", "")
+            if not business_id:
+                return []
 
-        category: str = business_data.get("category", "")
-        service_names = self._mapper.get_services_for_category(category)
+        biz_data = business_data.copy()
+        biz_data["business_id"] = business_id
 
-        if not service_names:
-            return []
-
-        weights = self._load_weights()
-        maturity = self._maturity.assess(business_data)
+        drafts, maturity = self.evaluate_opportunities(biz_data)
 
         # Persist maturity so queries can JOIN on it without recomputing.
         try:
@@ -121,28 +124,29 @@ class OpportunityIntelligenceEngine:
                 business_id=business_id,
                 score=maturity.score,
                 grade=maturity.grade,
-                details_json=json.dumps({
-                    "gaps": maturity.gaps,
-                    "strengths": maturity.strengths,
-                    "data_completeness": maturity.data_completeness,
-                    "dimensions": [
-                        {
-                            "name": d.name,
-                            "score": d.score,
-                            "max_score": d.max_score,
-                            "gap": d.gap,
-                            "detail": d.detail,
-                        }
-                        for d in maturity.dimensions
-                    ],
-                }),
+                details_json=json.dumps(
+                    {
+                        "gaps": maturity.gaps,
+                        "strengths": maturity.strengths,
+                        "data_completeness": maturity.data_completeness,
+                        "dimensions": [
+                            {
+                                "name": d.name,
+                                "score": d.score,
+                                "max_score": d.max_score,
+                                "gap": d.gap,
+                                "detail": d.detail,
+                            }
+                            for d in maturity.dimensions
+                        ],
+                    }
+                ),
             )
         except Exception:
             pass  # maturity persistence failure must never break opportunity generation
 
         results: List[Dict[str, Any]] = []
-        for service_name in service_names:
-            draft = self._draft_opportunity(business_data, service_name, weights, maturity)
+        for draft in drafts:
             if self._opp_repo.title_exists_for_business(business_id, draft.title):
                 results.append({"skipped": True, "title": draft.title})
                 continue
@@ -179,6 +183,36 @@ class OpportunityIntelligenceEngine:
 
         return results
 
+    def evaluate_opportunities(
+        self, business_data: Dict[str, Any]
+    ) -> tuple[List[OpportunityDraft], MaturityProfile]:
+        """Pure opportunity evaluation without database side effects.
+
+        Returns a tuple of (opportunity_drafts, maturity_profile).
+        """
+        biz_data = business_data.copy()
+        business_id = biz_data.get("business_id", "") or biz_data.get("id", "")
+        if not business_id:
+            from leadforge.database import uuidv7
+
+            business_id = uuidv7()
+        biz_data["business_id"] = business_id
+
+        category: str = biz_data.get("category", "")
+        service_names = self._mapper.get_services_for_category(category)
+        if not service_names:
+            return [], self._maturity.assess(biz_data)
+
+        weights = self._load_weights()
+        maturity = self._maturity.assess(biz_data)
+
+        drafts: List[OpportunityDraft] = []
+        for service_name in service_names:
+            draft = self._draft_opportunity(biz_data, service_name, weights, maturity)
+            drafts.append(draft)
+
+        return drafts, maturity
+
     def score_business(self, business_data: Dict[str, Any]) -> Dict[str, Any]:
         """Compute the composite opportunity score for a business.
 
@@ -204,13 +238,17 @@ class OpportunityIntelligenceEngine:
         signals, score = self._compute_signals(business_data, weights)
         close_probability = self._score_to_probability(score, weights)
         priority = self._score_to_priority(score, weights)
-        confidence, confidence_rationale = self._score_to_confidence(signals, score, maturity, weights)
+        confidence, confidence_rationale = self._score_to_confidence(
+            signals, score, maturity, weights
+        )
         explanation = self._build_explanation(
             business_data, signals, score, confidence, confidence_rationale, maturity
         )
 
-        all_signals = [{"rule_name": s.rule_name, "score_delta": s.score_delta, "reason": s.reason}
-                       for s in signals]
+        all_signals = [
+            {"rule_name": s.rule_name, "score_delta": s.score_delta, "reason": s.reason}
+            for s in signals
+        ]
 
         return {
             "score": score,
@@ -246,8 +284,12 @@ class OpportunityIntelligenceEngine:
     ) -> OpportunityDraft:
         signals, score = self._compute_signals(business_data, weights)
         close_probability = self._score_to_probability(score, weights)
-        estimated_value = self._estimate_value(service_name, score, weights)
-        confidence, confidence_rationale = self._score_to_confidence(signals, score, maturity, weights)
+        estimated_value = self._estimate_value(
+            service_name, score, weights, signals=signals, maturity=maturity
+        )
+        confidence, confidence_rationale = self._score_to_confidence(
+            signals, score, maturity, weights
+        )
         explanation = self._build_explanation(
             business_data, signals, score, confidence, confidence_rationale, maturity
         )
@@ -284,7 +326,9 @@ class OpportunityIntelligenceEngine:
         score: float = 0.0
 
         def _add(rule: str, delta: float, reason: str) -> None:
-            signals.append(ScoringSignal(rule_name=rule, score_delta=delta, reason=reason))
+            signals.append(
+                ScoringSignal(rule_name=rule, score_delta=delta, reason=reason)
+            )
             nonlocal score
             score += delta
 
@@ -303,23 +347,35 @@ class OpportunityIntelligenceEngine:
 
         # ── Rule 1: Website Presence ──────────────────────────────────────────
         if not website:
-            _add("NO_WEBSITE", weights["no_website"],
-                 "Business has no website — primary digital-gap signal. "
-                 "Website build is the highest-value service opportunity.")
+            _add(
+                "NO_WEBSITE",
+                weights["no_website"],
+                "Business has no website — primary digital-gap signal. "
+                "Website build is the highest-value service opportunity.",
+            )
         else:
-            _add("HAS_WEBSITE", weights["has_website"],
-                 f"Website detected ({website}). "
-                 "Opportunity for SEO, redesign, performance audit, or upgrade.")
+            _add(
+                "HAS_WEBSITE",
+                weights["has_website"],
+                f"Website detected ({website}). "
+                "Opportunity for SEO, redesign, performance audit, or upgrade.",
+            )
 
         # ── Rule 2: Contact Email ─────────────────────────────────────────────
         if email:
-            _add("HAS_EMAIL", weights["has_email"],
-                 f"Direct contact email available ({email}) — strong outreach signal.")
+            _add(
+                "HAS_EMAIL",
+                weights["has_email"],
+                f"Direct contact email available ({email}) — strong outreach signal.",
+            )
 
         # ── Rule 3: Phone Number ──────────────────────────────────────────────
         if phone:
-            _add("HAS_PHONE", weights["has_phone"],
-                 "Phone number present — enables direct outreach.")
+            _add(
+                "HAS_PHONE",
+                weights["has_phone"],
+                "Phone number present — enables direct outreach.",
+            )
 
         # ── Rule 4: Review Volume (3-tier + zero-review penalty) ──────────────
         try:
@@ -330,54 +386,87 @@ class OpportunityIntelligenceEngine:
         if rc is None:
             pass  # Unknown — no signal either way
         elif rc >= review_high_t:
-            _add("REVIEW_HIGH", weights["review_high"],
-                 f"{rc} reviews — strong Maps visibility and active customer base.")
+            _add(
+                "REVIEW_HIGH",
+                weights["review_high"],
+                f"{rc} reviews — strong Maps visibility and active customer base.",
+            )
         elif rc >= review_mid_t:
-            _add("REVIEW_MID", weights["review_mid"],
-                 f"{rc} reviews — moderate Maps presence.")
+            _add(
+                "REVIEW_MID",
+                weights["review_mid"],
+                f"{rc} reviews — moderate Maps presence.",
+            )
         elif rc > 0:
-            _add("REVIEW_LOW", weights["review_low"],
-                 f"{rc} reviews — minimal social proof; GMB optimisation recommended.")
+            _add(
+                "REVIEW_LOW",
+                weights["review_low"],
+                f"{rc} reviews — minimal social proof; GMB optimisation recommended.",
+            )
         else:
-            _add("REVIEW_NONE", weights["review_none"],
-                 "0 reviews on Google Maps — business is not visible or indexed. "
-                 "GMB setup is the priority recommendation.")
+            _add(
+                "REVIEW_NONE",
+                weights["review_none"],
+                "0 reviews on Google Maps — business is not visible or indexed. "
+                "GMB setup is the priority recommendation.",
+            )
 
         # ── Rule 5: Rating (4-tier including poor-rating penalty) ─────────────
         if rating is not None:
             try:
                 r = float(rating)
                 if r >= rating_high_t:
-                    _add("RATING_HIGH", weights["rating_high"],
-                         f"Rating {r:.1f} ≥ {rating_high_t} — strong reputation, "
-                         "high conversion potential.")
+                    _add(
+                        "RATING_HIGH",
+                        weights["rating_high"],
+                        f"Rating {r:.1f} ≥ {rating_high_t} — strong reputation, "
+                        "high conversion potential.",
+                    )
                 elif r >= rating_mid_t:
-                    _add("RATING_MID", weights["rating_mid"],
-                         f"Rating {r:.1f} — acceptable reputation. "
-                         "Targeted review strategy can improve ranking.")
+                    _add(
+                        "RATING_MID",
+                        weights["rating_mid"],
+                        f"Rating {r:.1f} — acceptable reputation. "
+                        "Targeted review strategy can improve ranking.",
+                    )
                 elif r >= rating_low_t:
-                    _add("RATING_LOW", weights["rating_low"],
-                         f"Rating {r:.1f} — below average. "
-                         "Reputation management is a service opportunity.")
+                    _add(
+                        "RATING_LOW",
+                        weights["rating_low"],
+                        f"Rating {r:.1f} — below average. "
+                        "Reputation management is a service opportunity.",
+                    )
                 else:
-                    _add("RATING_POOR", weights["rating_poor"],
-                         f"Rating {r:.1f} < {rating_low_t} — poor reputation. "
-                         "Reputational risk reduces digital service conversion likelihood.")
+                    _add(
+                        "RATING_POOR",
+                        weights["rating_poor"],
+                        f"Rating {r:.1f} < {rating_low_t} — poor reputation. "
+                        "Reputational risk reduces digital service conversion likelihood.",
+                    )
             except (TypeError, ValueError):
                 pass
 
         # ── Rule 6: Business Operational Status ───────────────────────────────
         if "PERMANENTLY_CLOSED" in business_status:
-            _add("PERMANENTLY_CLOSED", weights["permanently_closed"],
-                 "Business is permanently closed — very low conversion probability. "
-                 "Exclude from priority outreach.")
+            _add(
+                "PERMANENTLY_CLOSED",
+                weights["permanently_closed"],
+                "Business is permanently closed — very low conversion probability. "
+                "Exclude from priority outreach.",
+            )
         elif "TEMPORARILY_CLOSED" in business_status:
-            _add("TEMPORARILY_CLOSED", weights["temporarily_closed"],
-                 "Business is temporarily closed — reduced but non-zero opportunity. "
-                 "Re-verify before outreach.")
+            _add(
+                "TEMPORARILY_CLOSED",
+                weights["temporarily_closed"],
+                "Business is temporarily closed — reduced but non-zero opportunity. "
+                "Re-verify before outreach.",
+            )
         elif business_status in ("OPERATIONAL", ""):
-            _add("OPERATIONAL", weights["operational"],
-                 "Business is operational — strong conversion readiness signal.")
+            _add(
+                "OPERATIONAL",
+                weights["operational"],
+                "Business is operational — strong conversion readiness signal.",
+            )
 
         # Score floor at 0
         score = max(0.0, score)
@@ -417,60 +506,44 @@ class OpportunityIntelligenceEngine:
     ) -> tuple[str, str]:
         """Evidence-count–gated confidence.
 
-        Phase 4: Confidence is NOT just a score threshold map.
-        It reflects HOW MUCH EVIDENCE we have, gated by score.
-
-        Logic:
-        1. Count positive signals (evidence we have real data).
-        2. Apply data-completeness guard (very sparse data → force LOW).
-        3. Gate by score threshold + evidence count.
+        Delegates logic to the decoupled ConfidenceEngine.
         """
-        high_threshold = weights.get("confidence_high", 60.0)
-        med_threshold = weights.get("confidence_medium", 30.0)
-        min_signals_high = int(weights.get("min_signals_high", 4))
-        min_signals_medium = int(weights.get("min_signals_medium", 2))
-
         positive_signal_count = sum(1 for s in signals if s.score_delta > 0)
-
-        # Guard: if data is very sparse, confidence can never be HIGH
-        if maturity.data_completeness < 0.25:
-            return (
-                "LOW",
-                f"Data completeness is only {maturity.data_completeness:.0%} — "
-                "insufficient evidence to justify higher confidence.",
-            )
-
-        if (score >= high_threshold
-                and positive_signal_count >= min_signals_high
-                and maturity.data_completeness >= 0.5):
-            return (
-                "HIGH",
-                f"Score {score:.1f} ≥ {high_threshold} with {positive_signal_count} positive signals "
-                f"and {maturity.data_completeness:.0%} data completeness.",
-            )
-
-        if score >= med_threshold and positive_signal_count >= min_signals_medium:
-            return (
-                "MEDIUM",
-                f"Score {score:.1f} ≥ {med_threshold} with {positive_signal_count} positive signals.",
-            )
-
-        return (
-            "LOW",
-            f"Score {score:.1f} or evidence count ({positive_signal_count} positive signals) "
-            "is below threshold for MEDIUM confidence.",
+        engine = ConfidenceEngine()
+        return engine.calculate(
+            score=score,
+            positive_signal_count=positive_signal_count,
+            data_completeness=maturity.data_completeness,
+            weights=weights,
         )
 
     def _estimate_value(
-        self, service_name: str, score: float, weights: Dict[str, float]
+        self,
+        service_name: str,
+        score: float,
+        weights: Dict[str, float],
+        signals: Optional[List[ScoringSignal]] = None,
+        maturity: Optional[Any] = None,
     ) -> float:
-        """Derive estimated deal value from service base_price × confidence multiplier."""
+        """Derive estimated deal value from service base_price × confidence multiplier.
+
+        Callers should pass the already-computed signals and maturity so that
+        confidence is calculated with real evidence rather than empty inputs.
+        """
         base_price = self._svc_repo.get_base_price(service_name)
-        confidence, _ = self._score_to_confidence([], score, type('M', (), {'data_completeness': 1.0})(), weights)
+        effective_signals = signals if signals is not None else []
+        effective_maturity = (
+            maturity
+            if maturity is not None
+            else type("M", (), {"data_completeness": 1.0})()
+        )
+        confidence, _ = self._score_to_confidence(
+            effective_signals, score, effective_maturity, weights
+        )
         multiplier_key = {
-            "HIGH":   "value_multiplier_high",
+            "HIGH": "value_multiplier_high",
             "MEDIUM": "value_multiplier_medium",
-            "LOW":    "value_multiplier_low",
+            "LOW": "value_multiplier_low",
         }[confidence]
         multiplier = weights.get(multiplier_key, 0.35)
         return base_price * multiplier
@@ -545,37 +618,39 @@ class OpportunityIntelligenceEngine:
 
         return {
             # ── Scoring deltas
-            "no_website":         get("opp.score.no_website",         45.0),
-            "has_website":        get("opp.score.has_website",          8.0),
-            "has_email":          get("opp.score.has_email",           10.0),
-            "has_phone":          get("opp.score.has_phone",            3.0),
-            "review_high":        get("opp.score.review_high",         15.0),
-            "review_mid":         get("opp.score.review_mid",           8.0),
-            "review_low":         get("opp.score.review_low",           3.0),
-            "review_none":        get("opp.score.review_none",         -5.0),
-            "rating_high":        get("opp.score.rating_high",         12.0),
-            "rating_mid":         get("opp.score.rating_mid",           6.0),
-            "rating_low":         get("opp.score.rating_low",           2.0),
-            "rating_poor":        get("opp.score.rating_poor",         -8.0),
-            "operational":        get("opp.score.operational",         12.0),
+            "no_website": get("opp.score.no_website", 45.0),
+            "has_website": get("opp.score.has_website", 8.0),
+            "has_email": get("opp.score.has_email", 10.0),
+            "has_phone": get("opp.score.has_phone", 3.0),
+            "review_high": get("opp.score.review_high", 15.0),
+            "review_mid": get("opp.score.review_mid", 8.0),
+            "review_low": get("opp.score.review_low", 3.0),
+            "review_none": get("opp.score.review_none", -5.0),
+            "rating_high": get("opp.score.rating_high", 12.0),
+            "rating_mid": get("opp.score.rating_mid", 6.0),
+            "rating_low": get("opp.score.rating_low", 2.0),
+            "rating_poor": get("opp.score.rating_poor", -8.0),
+            "operational": get("opp.score.operational", 12.0),
             "temporarily_closed": get("opp.score.temporarily_closed", -15.0),
             "permanently_closed": get("opp.score.permanently_closed", -60.0),
             # ── Review / Rating thresholds (used inside _compute_signals)
             "review_high_threshold": get("opp.review.high_threshold", 100.0),
-            "review_mid_threshold":  get("opp.review.mid_threshold",   10.0),
-            "rating_high_threshold": get("opp.rating.high_threshold",   4.2),
-            "rating_mid_threshold":  get("opp.rating.mid_threshold",    3.5),
-            "rating_low_threshold":  get("opp.rating.low_threshold",    3.0),
+            "review_mid_threshold": get("opp.review.mid_threshold", 10.0),
+            "rating_high_threshold": get("opp.rating.high_threshold", 4.2),
+            "rating_mid_threshold": get("opp.rating.mid_threshold", 3.5),
+            "rating_low_threshold": get("opp.rating.low_threshold", 3.0),
             # ── Confidence thresholds + evidence gates
-            "confidence_high":    get("opp.confidence.high_threshold",  60.0),
-            "confidence_medium":  get("opp.confidence.medium_threshold", 30.0),
-            "min_signals_high":   get("opp.confidence.min_signals_high",  4.0),
+            "confidence_high": get("opp.confidence.high_threshold", 60.0),
+            "confidence_medium": get("opp.confidence.medium_threshold", 30.0),
+            "min_signals_high": get("opp.confidence.min_signals_high", 4.0),
             "min_signals_medium": get("opp.confidence.min_signals_medium", 2.0),
             # ── Priority thresholds
-            "priority_high":      get("opp.priority.high_threshold",   60.0),
-            "priority_medium":    get("opp.priority.medium_threshold",  28.0),
+            "priority_high": get("opp.priority.high_threshold", 60.0),
+            "priority_medium": get("opp.priority.medium_threshold", 28.0),
             # ── Estimated value multipliers
-            "value_multiplier_high":   get("opp.value.high_confidence_multiplier",   1.0),
-            "value_multiplier_medium": get("opp.value.medium_confidence_multiplier", 0.65),
-            "value_multiplier_low":    get("opp.value.low_confidence_multiplier",    0.35),
+            "value_multiplier_high": get("opp.value.high_confidence_multiplier", 1.0),
+            "value_multiplier_medium": get(
+                "opp.value.medium_confidence_multiplier", 0.65
+            ),
+            "value_multiplier_low": get("opp.value.low_confidence_multiplier", 0.35),
         }

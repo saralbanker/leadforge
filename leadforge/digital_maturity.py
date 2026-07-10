@@ -37,29 +37,33 @@ from leadforge.repositories.settings import SQLiteSettingsRepository
 
 # ── Value Objects ─────────────────────────────────────────────────────────────
 
+
 @dataclass(frozen=True)
 class MaturityDimension:
     """One measurable digital dimension."""
+
     name: str
-    score: float          # 0.0–25.0 per dimension (4 dims × 25 = 100 max)
+    score: float  # 0.0–25.0 per dimension (4 dims × 25 = 100 max)
     max_score: float
-    gap: bool             # True → this dimension has a detectable gap
-    detail: str           # Human-readable rationale
+    gap: bool  # True → this dimension has a detectable gap
+    detail: str  # Human-readable rationale
 
 
 @dataclass
 class MaturityProfile:
     """Full digital maturity assessment for one business."""
-    score: float                             # 0.0–100.0
-    grade: str                               # A/B/C/D/F
+
+    score: float  # 0.0–100.0
+    grade: str  # A/B/C/D/F
     dimensions: List[MaturityDimension] = field(default_factory=list)
     gaps: List[str] = field(default_factory=list)
     strengths: List[str] = field(default_factory=list)
     explanation: str = ""
-    data_completeness: float = 0.0          # 0.0–1.0 fraction of known fields
+    data_completeness: float = 0.0  # 0.0–1.0 fraction of known fields
 
 
 # ── Assessor ──────────────────────────────────────────────────────────────────
+
 
 class DigitalMaturityAssessor:
     """Assesses a business's digital maturity from scraper-provided metadata.
@@ -68,9 +72,11 @@ class DigitalMaturityAssessor:
     Configurable: grade thresholds and dimension weights are read from settings.
     """
 
-    _DIM_MAX = 25.0   # max points per dimension; 4 dims × 25 = 100 max total
+    _DIM_MAX = 25.0  # max points per dimension; 4 dims × 25 = 100 max total
 
-    def __init__(self, settings_repo: Optional[SQLiteSettingsRepository] = None) -> None:
+    def __init__(
+        self, settings_repo: Optional[SQLiteSettingsRepository] = None
+    ) -> None:
         self._settings = settings_repo or SQLiteSettingsRepository()
 
     def assess(self, business_data: Dict[str, Any]) -> MaturityProfile:
@@ -90,7 +96,9 @@ class DigitalMaturityAssessor:
 
         gaps = [d.detail for d in dims if d.gap]
         strengths = [d.detail for d in dims if not d.gap]
-        explanation = self._build_explanation(business_data, dims, total, grade, completeness)
+        explanation = self._build_explanation(
+            business_data, dims, total, grade, completeness
+        )
 
         return MaturityProfile(
             score=round(total, 2),
@@ -263,8 +271,16 @@ class DigitalMaturityAssessor:
 
     def _data_completeness(self, biz: Dict[str, Any]) -> float:
         """Fraction of known key fields.  0.0 = no data, 1.0 = all fields present."""
-        fields = ["name", "website", "phone", "contact_email", "rating", "review_count",
-                  "business_status", "categories"]
+        fields = [
+            "name",
+            "website",
+            "phone",
+            "contact_email",
+            "rating",
+            "review_count",
+            "business_status",
+            "categories",
+        ]
         present = sum(1 for f in fields if biz.get(f))
         return present / len(fields)
 
@@ -299,7 +315,9 @@ class DigitalMaturityAssessor:
         for d in dims:
             bar = "✓" if not d.gap else "✗"
             pct = int((d.score / d.max_score) * 100) if d.max_score else 0
-            lines.append(f"  {bar} [{d.name}] {d.score:.0f}/{d.max_score:.0f} pts ({pct}%) — {d.detail}")
+            lines.append(
+                f"  {bar} [{d.name}] {d.score:.0f}/{d.max_score:.0f} pts ({pct}%) — {d.detail}"
+            )
 
         lines.append("")
         if any(d.gap for d in dims):
@@ -316,10 +334,10 @@ class DigitalMaturityAssessor:
         get = self._settings.get_float
         return {
             "review_high_threshold": get("opp.review.high_threshold", 100.0),
-            "review_mid_threshold":  get("opp.review.mid_threshold", 10.0),
+            "review_mid_threshold": get("opp.review.mid_threshold", 10.0),
             "rating_high_threshold": get("opp.rating.high_threshold", 4.2),
-            "rating_mid_threshold":  get("opp.rating.mid_threshold", 3.5),
-            "rating_low_threshold":  get("opp.rating.low_threshold", 3.0),
+            "rating_mid_threshold": get("opp.rating.mid_threshold", 3.5),
+            "rating_low_threshold": get("opp.rating.low_threshold", 3.0),
             "grade_a": get("opp.maturity.grade_a", 80.0),
             "grade_b": get("opp.maturity.grade_b", 60.0),
             "grade_c": get("opp.maturity.grade_c", 40.0),

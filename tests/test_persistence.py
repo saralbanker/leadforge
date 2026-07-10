@@ -5,6 +5,7 @@ from pathlib import Path
 
 # Important: Override database path before importing any db modules to isolate test data
 import leadforge.database
+
 temp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 temp_db_path = Path(temp_db.name)
 temp_db.close()
@@ -14,6 +15,7 @@ from leadforge.database import initialize_database, get_db_connection  # noqa: E
 from leadforge.repositories.settings import SQLiteSettingsRepository  # noqa: E402
 from leadforge.repositories.search import SQLiteSearchHistoryRepository  # noqa: E402
 from leadforge.repositories.lead import SQLiteLeadRepository  # noqa: E402
+
 
 @pytest.fixture(scope="module", autouse=True)
 def setup_and_teardown():
@@ -26,6 +28,7 @@ def setup_and_teardown():
             os.remove(temp_db_path)
         except Exception:
             pass
+
 
 def test_database_initialization():
     """Asserts that all tables, indexes, and triggers are created during database bootstrap."""
@@ -40,7 +43,9 @@ def test_database_initialization():
         assert rows[0]["migration_name"] == "001_initial.sql"
 
         # Verify core businesses table exists
-        cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='businesses'")
+        cursor.execute(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='businesses'"
+        )
         assert cursor.fetchone()[0] == 1
 
         # Verify reference lookup discovery_sources table exists and is populated
@@ -57,12 +62,14 @@ def test_database_initialization():
     finally:
         conn.close()
 
+
 def test_idempotent_migrations():
     """Asserts that running migration execution repeated times executes cleanly without errors."""
     try:
         initialize_database()
     except Exception as e:
         pytest.fail(f"Re-initialization of migrations failed: {str(e)}")
+
 
 def test_settings_repository():
     """Verifies settings CRUD operations behave as expected."""
@@ -75,6 +82,7 @@ def test_settings_repository():
     # Update value
     repo.set("test_key", "new_val")
     assert repo.get("test_key") == "new_val"
+
 
 def test_search_history_repository():
     """Verifies scraper search run records are written and retrieved successfully."""
@@ -94,6 +102,7 @@ def test_search_history_repository():
     assert rajkot_run["status"] == "COMPLETED"
     assert rajkot_run["filename"] == "Rajkot_Textiles.xlsx"
 
+
 def test_lead_repository_and_deduplication():
     """Verifies complex business, addresses, opportunities transaction writes and duplicate checks."""
     lead_repo = SQLiteLeadRepository()
@@ -107,14 +116,14 @@ def test_lead_repository_and_deduplication():
         "category": "Chemicals",
         "source_url": "https://www.google.com/maps/place/Reliance/data=!4m2!3m1!1s0x395e87a2:0xabcdef123",
         "score": 0,
-        "notes": "Website exists"
+        "notes": "Website exists",
     }
 
     # Assert not duplicate originally
     is_dup = lead_repo.check_duplicate(
         google_place_id="0x395e87a2:0xabcdef123",
         name="Reliance Industries",
-        phone="+91 79 12345678"
+        phone="+91 79 12345678",
     )
     assert not is_dup
 
@@ -124,17 +133,13 @@ def test_lead_repository_and_deduplication():
 
     # Assert duplicate by Google Place ID
     is_dup_place = lead_repo.check_duplicate(
-        google_place_id="0x395e87a2:0xabcdef123",
-        name="Reliance Industries",
-        phone=""
+        google_place_id="0x395e87a2:0xabcdef123", name="Reliance Industries", phone=""
     )
     assert is_dup_place
 
     # Assert duplicate by Name + Phone
     is_dup_phone = lead_repo.check_duplicate(
-        google_place_id="",
-        name="Reliance Industries",
-        phone="+91 79 12345678"
+        google_place_id="", name="Reliance Industries", phone="+91 79 12345678"
     )
     assert is_dup_phone
 

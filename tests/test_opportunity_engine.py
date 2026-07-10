@@ -51,6 +51,7 @@ from leadforge.repositories.settings import SQLiteSettingsRepository  # noqa: E4
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
+
 @pytest.fixture(scope="module", autouse=True)
 def db_setup():
     initialize_database()
@@ -74,9 +75,7 @@ def _insert_business(name: str, category: str = "Traders") -> str:
         norm = name.strip().lower()
         norm_cat = normalize_category(category)
 
-        cursor.execute(
-            "SELECT id FROM business_types WHERE name = ?", (norm_cat,)
-        )
+        cursor.execute("SELECT id FROM business_types WHERE name = ?", (norm_cat,))
         row = cursor.fetchone()
         if row:
             bt_id = row[0]
@@ -129,6 +128,7 @@ def _make_biz_data(
 
 # ── 1. Category → Service Mapping ─────────────────────────────────────────────
 
+
 class TestCategoryServiceMapper:
     def test_known_category_returns_list(self):
         mapper = CategoryServiceMapper()
@@ -170,6 +170,7 @@ class TestCategoryServiceMapper:
 
 
 # ── 2. Score Calculation (Pure / Deterministic) ───────────────────────────────
+
 
 class TestScoringEngine:
     def _engine(self) -> OpportunityIntelligenceEngine:
@@ -236,7 +237,9 @@ class TestScoringEngine:
         rule_names = [s["rule_name"] for s in result["signals"]]
         assert "PERMANENTLY_CLOSED" in rule_names
         # Penalty must be negative
-        perm = next(s for s in result["signals"] if s["rule_name"] == "PERMANENTLY_CLOSED")
+        perm = next(
+            s for s in result["signals"] if s["rule_name"] == "PERMANENTLY_CLOSED"
+        )
         assert perm["score_delta"] < 0
 
     def test_score_floored_at_zero(self):
@@ -270,6 +273,7 @@ class TestScoringEngine:
 
 
 # ── 3. Priority and Confidence Derivation ─────────────────────────────────────
+
 
 class TestPriorityConfidence:
     def _engine(self) -> OpportunityIntelligenceEngine:
@@ -321,6 +325,7 @@ class TestPriorityConfidence:
 
 # ── 4. Explainability ─────────────────────────────────────────────────────────
 
+
 class TestExplainability:
     def test_explanation_contains_business_name(self):
         engine = OpportunityIntelligenceEngine()
@@ -352,6 +357,7 @@ class TestExplainability:
 
 
 # ── 5. Opportunity Generation ─────────────────────────────────────────────────
+
 
 class TestOpportunityGeneration:
     def test_generate_creates_opportunities_in_db(self):
@@ -389,6 +395,7 @@ class TestOpportunityGeneration:
 
 # ── 6. Duplicate Prevention ───────────────────────────────────────────────────
 
+
 class TestDuplicatePrevention:
     def test_second_call_skips_existing_opportunities(self):
         engine = OpportunityIntelligenceEngine()
@@ -416,13 +423,16 @@ class TestDuplicatePrevention:
             score=50.0,
             close_probability=0.5,
             estimated_value=5000.0,
-            scoring_logs=[{"rule_name": "TEST", "score_delta": 50.0, "reason": "Test reason"}],
+            scoring_logs=[
+                {"rule_name": "TEST", "score_delta": 50.0, "reason": "Test reason"}
+            ],
         )
         assert opp_repo.title_exists_for_business(biz_id, "Test Title — TitleCheck Biz")
         assert not opp_repo.title_exists_for_business(biz_id, "Different Title")
 
 
 # ── 7. Ranking Consistency ────────────────────────────────────────────────────
+
 
 class TestRankingConsistency:
     def test_list_ranked_ordered_by_score_desc(self):
@@ -439,7 +449,9 @@ class TestRankingConsistency:
             score=90.0,
             close_probability=0.9,
             estimated_value=20000.0,
-            scoring_logs=[{"rule_name": "TEST_HIGH", "score_delta": 90.0, "reason": "High"}],
+            scoring_logs=[
+                {"rule_name": "TEST_HIGH", "score_delta": 90.0, "reason": "High"}
+            ],
         )
         opp_repo.create_with_scoring_logs(
             business_id=biz_b,
@@ -448,7 +460,9 @@ class TestRankingConsistency:
             score=10.0,
             close_probability=0.1,
             estimated_value=500.0,
-            scoring_logs=[{"rule_name": "TEST_LOW", "score_delta": 10.0, "reason": "Low"}],
+            scoring_logs=[
+                {"rule_name": "TEST_LOW", "score_delta": 10.0, "reason": "Low"}
+            ],
         )
 
         ranked = engine.list_opportunities()
@@ -465,7 +479,9 @@ class TestRankingConsistency:
             score=55.0,
             close_probability=0.55,
             estimated_value=8000.0,
-            scoring_logs=[{"rule_name": "STAGE_TEST", "score_delta": 55.0, "reason": "stage"}],
+            scoring_logs=[
+                {"rule_name": "STAGE_TEST", "score_delta": 55.0, "reason": "stage"}
+            ],
         )
 
         engine = OpportunityIntelligenceEngine()
@@ -479,6 +495,7 @@ class TestRankingConsistency:
 
 
 # ── 8. Repository Integration ─────────────────────────────────────────────────
+
 
 class TestRepositoryIntegration:
     def test_scoring_logs_persisted_correctly(self):
@@ -522,6 +539,7 @@ class TestRepositoryIntegration:
 
 # ── 9. Configuration Changes Affect Scoring ───────────────────────────────────
 
+
 class TestConfigurabilityAffectsScoring:
     def test_changing_no_website_weight_changes_score(self):
         """Updating settings must change scores without code changes."""
@@ -534,7 +552,9 @@ class TestConfigurabilityAffectsScoring:
         score_a = engine_a.score_business(data)["score"]
 
         # Update the weight
-        settings_repo.set("opp.score.no_website", "99.0", "Temporarily elevated for test")
+        settings_repo.set(
+            "opp.score.no_website", "99.0", "Temporarily elevated for test"
+        )
         engine_b = OpportunityIntelligenceEngine(settings_repo=settings_repo)
         score_b = engine_b.score_business(data)["score"]
 
@@ -545,6 +565,7 @@ class TestConfigurabilityAffectsScoring:
 
 
 # ── 10. Phase 4: Review Banding ───────────────────────────────────────────────
+
 
 class TestPhase4ReviewBanding:
     def _engine(self) -> OpportunityIntelligenceEngine:
@@ -603,6 +624,7 @@ class TestPhase4ReviewBanding:
 
 # ── 11. Phase 4: Rating Banding ───────────────────────────────────────────────
 
+
 class TestPhase4RatingBanding:
     def _engine(self) -> OpportunityIntelligenceEngine:
         return OpportunityIntelligenceEngine()
@@ -655,6 +677,7 @@ class TestPhase4RatingBanding:
 
 # ── 12. Phase 4: Evidence-Count–Gated Confidence ─────────────────────────────
 
+
 class TestPhase4EvidenceConfidence:
     def _engine(self) -> OpportunityIntelligenceEngine:
         return OpportunityIntelligenceEngine()
@@ -687,7 +710,7 @@ class TestPhase4EvidenceConfidence:
         data = _make_biz_data(
             biz_id,
             name="Rich Data Biz",
-            website="",        # No website → big NO_WEBSITE bonus
+            website="",  # No website → big NO_WEBSITE bonus
             phone="+919876543210",
             contact_email="owner@richbiz.com",
             rating=4.5,
@@ -733,6 +756,7 @@ class TestPhase4EvidenceConfidence:
 
 # ── 13. Phase 4: Digital Maturity Assessment ──────────────────────────────────
 
+
 class TestPhase4DigitalMaturity:
     def _engine(self) -> OpportunityIntelligenceEngine:
         return OpportunityIntelligenceEngine()
@@ -758,7 +782,9 @@ class TestPhase4DigitalMaturity:
         biz_id_a = _insert_business("No Web Maturity Biz")
         biz_id_b = _insert_business("Has Web Maturity Biz")
         no_web = engine.score_business(_make_biz_data(biz_id_a, website=""))
-        has_web = engine.score_business(_make_biz_data(biz_id_b, website="https://example.com"))
+        has_web = engine.score_business(
+            _make_biz_data(biz_id_b, website="https://example.com")
+        )
         assert no_web["maturity_score"] < has_web["maturity_score"]
 
     def test_generate_includes_maturity_in_result(self):
@@ -789,6 +815,7 @@ class TestPhase4DigitalMaturity:
 
 
 # ── 14. Phase 4: Signal Lists & Explainability ────────────────────────────────
+
 
 class TestPhase4SignalLists:
     def _engine(self) -> OpportunityIntelligenceEngine:
@@ -844,6 +871,7 @@ class TestPhase4SignalLists:
 
 # ── 15. Phase 4: Sigmoid Close Probability ────────────────────────────────────
 
+
 class TestPhase4SigmoidProbability:
     def _engine(self) -> OpportunityIntelligenceEngine:
         return OpportunityIntelligenceEngine()
@@ -886,15 +914,16 @@ class TestPhase4SigmoidProbability:
         biz_id_lo = _insert_business("Lo Prob Biz")
         biz_id_hi = _insert_business("Hi Prob Biz")
         lo = engine.score_business(_make_biz_data(biz_id_lo, website="", phone=""))
-        hi = engine.score_business(_make_biz_data(
-            biz_id_hi,
-            website="",
-            phone="+919999900000",
-            contact_email="a@b.com",
-            rating=4.5,
-            review_count=200,
-            business_status="OPERATIONAL",
-        ))
+        hi = engine.score_business(
+            _make_biz_data(
+                biz_id_hi,
+                website="",
+                phone="+919999900000",
+                contact_email="a@b.com",
+                rating=4.5,
+                review_count=200,
+                business_status="OPERATIONAL",
+            )
+        )
         if hi["score"] > lo["score"]:
             assert hi["close_probability"] > lo["close_probability"]
-

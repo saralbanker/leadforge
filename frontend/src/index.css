@@ -533,3 +533,87 @@ body {
   color: var(--text-secondary);
   padding: 0.25rem 0;
 }
+
+/* ── Progress Bar ────────────────────────────────────────────── */
+.progress-track {
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-accent), #0d9488);
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+/* ── Rejection Intelligence Grid ─────────────────────────────── */
+.rejection-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 0.6rem;
+}
+
+.rejection-card {
+  background: rgba(19, 25, 38, 0.5);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+  text-align: center;
+}
+
+.rejection-count {
+  font-family: var(--display-font);
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.rejection-label {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Service Cards (Opportunities) ───────────────────────────── */
+.service-card {
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.service-card:hover {
+  border-color: rgba(20, 184, 166, 0.3);
+  box-shadow: 0 0 0 1px rgba(20, 184, 166, 0.1), var(--shadow-md);
+}
+
+.svc-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: rgba(19, 25, 38, 0.5);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 0.3rem 0.6rem;
+  min-width: 52px;
+}
+
+.svc-stat-val {
+  font-family: var(--display-font);
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.svc-stat-lbl {
+  font-size: 0.62rem;
+  color: var(--text-muted);
+  margin-top: 1px;
+  white-space: nowrap;
+}
