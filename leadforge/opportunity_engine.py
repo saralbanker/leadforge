@@ -36,6 +36,8 @@ from leadforge.repositories.opportunity import SQLiteOpportunityRepository
 from leadforge.repositories.service import SQLiteServiceRepository
 from leadforge.repositories.settings import SQLiteSettingsRepository
 from leadforge.confidence_engine import ConfidenceEngine
+from leadforge.database import append_event
+
 
 
 # ── Value objects ─────────────────────────────────────────────────────────────
@@ -167,7 +169,19 @@ class OpportunityIntelligenceEngine:
                     for s in draft.signals
                 ],
             )
+            append_event(
+                event_type="OPPORTUNITY_CREATED",
+                entity_type="Opportunity",
+                entity_id=opp_id,
+                payload={
+                    "business_id": draft.business_id,
+                    "title": draft.title,
+                    "score": draft.score,
+                    "estimated_value": draft.estimated_value,
+                },
+            )
             results.append(
+
                 {
                     "created": True,
                     "opportunity_id": opp_id,
@@ -618,8 +632,8 @@ class OpportunityIntelligenceEngine:
 
         return {
             # ── Scoring deltas
-            "no_website": get("opp.score.no_website", 45.0),
-            "has_website": get("opp.score.has_website", 8.0),
+            "no_website": get("opp.score.no_website", 35.0),
+            "has_website": get("opp.score.has_website", 25.0),
             "has_email": get("opp.score.has_email", 10.0),
             "has_phone": get("opp.score.has_phone", 3.0),
             "review_high": get("opp.score.review_high", 15.0),

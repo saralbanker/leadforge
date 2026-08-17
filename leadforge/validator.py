@@ -56,6 +56,7 @@ class BusinessValidator:
         self,
         business_data: Dict[str, Any],
         no_website_only: bool = False,
+        website_filter: str = "ALL",
         target_city: str = None,
         target_category: str = None,
         min_rating: float = None,
@@ -165,12 +166,13 @@ class BusinessValidator:
             elif city_norm not in address_raw.lower():
                 return "WRONG_CITY"
 
-        # 7. Apply User Filters
-        # No Website Only filter
-        if no_website_only:
-            website = (business_data.get("website") or "").strip()
-            if website:
-                return "HAS_WEBSITE"
+        # 7. Apply User Filters / Website Filter
+        website = (business_data.get("website") or "").strip()
+        effective_no_website = no_website_only or (website_filter == "NO_WEBSITE")
+        if effective_no_website and website:
+            return "HAS_WEBSITE"
+        if website_filter == "HAS_WEBSITE" and not website:
+            return "NO_WEBSITE"
 
         # Minimum Rating filter — an enabled filter is never bypassed:
         # a missing rating fails validation.
@@ -210,3 +212,21 @@ class BusinessValidator:
         except Exception:
             cats = []
         return [c for c in cats if (c or "").strip()] if isinstance(cats, list) else []
+
+
+def validate_transition(
+    entity_type: str,
+    current_state: str,
+    next_state: str,
+    triggering_event: str = "",
+) -> bool:
+    """Delegates transition validation to EntityStateMachine."""
+    from leadforge.execution_state import EntityStateMachine
+
+    return EntityStateMachine.validate_transition(
+        entity_type=entity_type,
+        current_state=current_state,
+        next_state=next_state,
+        triggering_event=triggering_event,
+    )
+

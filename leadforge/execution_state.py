@@ -1,15 +1,19 @@
-"""Execution State module for LeadForge V3.0 architecture.
+"""Execution State module for LeadForge V3.0 and Communication Engine architecture.
 
-ONLY stores runtime state (progress, retry queue, qualified count, search budget).
-NEVER stores business intelligence.
+Provides:
+1. ScraperExecutionState - ONLY stores runtime state (progress, retry queue, qualified count, search budget).
+2. EntityStateMachine - Formal state validation and lifecycle tracking for Business, Opportunity, Lead, and CommunicationThread entities.
 """
 
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+from leadforge.utils import get_logger
+
+logger = get_logger()
 
 _YIELD_SAMPLE_INTERVAL = 5  # recompute adaptive budget every N businesses visited
 
-# Rejection reason → counter attribute name
+# Rejection reason -> counter attribute name
 _REJECTION_COUNTER_MAP = {
     "NO_NAME": "no_name_count",
     "NO_PHONE": "no_phone_count",
@@ -256,3 +260,103 @@ class ScraperExecutionState:
             "extraction_rates": self.extraction_rates(),
             "avg_confidence": round(self.avg_confidence(), 4),
         }
+
+
+class InvalidTransitionError(Exception):
+    """Raised when an invalid entity state transition is attempted."""
+
+    pass
+
+
+class EntityStateMachine:
+    """Enforces valid state transitions across LeadForge entities."""
+
+    TRANSITION_MAPS: Dict[str, Dict[str, List[str]]] = {
+        "Business": {
+            "DISCOVERED": ["AUDITED", "QUALIFIED", "UNQUALIFIED", "ARCHIVED"],
+            "AUDITED": ["QUALIFIED", "UNQUALIFIED", "ARCHIVED"],
+            "QUALIFIED": ["OUTREACH_DRAFTED", "OUTREACH_SENT", "UNQUALIFIED", "ARCHIVED"],
+            "UNQUALIFIED": ["ARCHIVED"],
+            "OUTREACH_DRAFTED": ["OUTREACH_SENT", "ARCHIVED"],
+            "OUTREACH_SENT": ["CONVERTED", "REJECTED", "UNSUBSCRIBED", "ARCHIVED"],
+            "CONVERTED": ["ARCHIVED"],
+            "REJECTED": ["ARCHIVED"],
+            "UNSUBSCRIBED": ["ARCHIVED"],
+            "ARCHIVED": [],  # Terminal
+        },
+        "Opportunity": {
+            "OPEN": ["IN_PROGRESS", "QUALIFIED", "UNQUALIFIED"],
+            "IN_PROGRESS": ["QUALIFIED", "UNQUALIFIED", "CLOSED_WON", "CLOSED_LOST"],
+            "QUALIFIED": ["CLOSED_WON", "CLOSED_LOST"],
+            "UNQUALIFIED": ["CLOSED_LOST"],
+            "CLOSED_WON": [],  # Terminal
+            "CLOSED_LOST": [],  # Terminal
+        },
+        "Lead": {
+            "NEW": ["CONTACTED", "QUALIFIED", "UNQUALIFIED"],
+            "CONTACTED": ["QUALIFIED", "UNQUALIFIED", "LOST"],
+            "QUALIFIED": ["LOST"],
+            "UNQUALIFIED": [],  # Terminal
+            "LOST": [],  # Terminal
+        },
+        "CommunicationThread": {
+            "PLANNED": ["OUTREACH_SENT", "CANCELLED", "UNSUBSCRIBED"],
+            "OUTREACH_SENT": ["AWAITING_REPLY", "UNSUBSCRIBED", "FAILED"],
+            "AWAITING_REPLY": ["REPLIED_POSITIVE", "REPLIED_NEGATIVE", "REPLIED_NEUTRAL", "UNSUBSCRIBED", "FOLLOWUP_PENDING"],
+            "FOLLOWUP_PENDING": ["OUTREACH_SENT", "CANCELLED", "UNSUBSCRIBED"],
+            "REPLIED_POSITIVE": ["CLOSED_WON", "ARCHIVED"],
+            "REPLIED_NEGATIVE": ["CLOSED_LOST", "ARCHIVED"],
+            "REPLIED_NEUTRAL": ["AWAITING_REPLY", "ARCHIVED"],
+            "UNSUBSCRIBED": [],  # Terminal
+            "FAILED": [],        # Terminal
+            "CANCELLED": [],     # Terminal
+        },
+        "EmailDraft": {
+            "PENDING_APPROVAL": ["APPROVED", "REJECTED", "CANCELLED"],
+            "APPROVED": ["QUEUED", "SENT", "FAILED", "CANCELLED", "REJECTED"],
+            "QUEUED": ["SENT", "FAILED", "CANCELLED"],
+            "REJECTED": ["PENDING_APPROVAL", "CANCELLED"],
+            "SENT": [],  # Terminal
+            "FAILED": ["PENDING_APPROVAL", "APPROVED", "CANCELLED"],
+            "CANCELLED": [],  # Terminal
+        },
+    }
+
+    TERMINAL_STATES: Dict[str, List[str]] = {
+        "Business": ["ARCHIVED"],
+        "Opportunity": ["CLOSED_WON", "CLOSED_LOST"],
+        "Lead": ["UNQUALIFIED", "LOST"],
+        "CommunicationThread": ["UNSUBSCRIBED", "FAILED", "CANCELLED"],
+        "EmailDraft": ["SENT", "CANCELLED"],
+    }
+
+    @classmethod
+    def validate_transition(
+        cls,
+        entity_type: str,
+        current_state: str,
+        next_state: str,
+        triggering_event: Optional[str] = None,
+    ) -> None:
+        """Validates that a transition from current_state to next_state is legal."""
+        if current_state == next_state:
+            return  # No-op transition is allowed
+
+        entity_map = cls.TRANSITION_MAPS.get(entity_type)
+        if not entity_map:
+            raise InvalidTransitionError(f"Unknown entity type: '{entity_type}'")
+
+        allowed_next = entity_map.get(current_state)
+        if allowed_next is None:
+            raise InvalidTransitionError(f"Unknown current state '{current_state}' for {entity_type}")
+
+        if next_state not in allowed_next:
+            raise InvalidTransitionError(
+                f"Invalid transition for {entity_type}: '{current_state}' -> '{next_state}'. "
+                f"Allowed transitions from '{current_state}': {allowed_next}"
+            )
+
+    @classmethod
+    def is_terminal(cls, entity_type: str, state: str) -> bool:
+        """Returns True if the state is terminal for the entity type."""
+        return state in cls.TERMINAL_STATES.get(entity_type, [])

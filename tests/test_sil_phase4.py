@@ -581,8 +581,24 @@ class TestSearchPlanGeneratorNormalisedDedup:
 class TestRealResolverSmoke:
     """Light smoke tests using the actual CategoryResolver + taxonomy."""
 
+    @pytest.fixture(scope="class", autouse=True)
+    def mock_geo_resolver(self):
+        from unittest.mock import patch
+        def mock_get_neighbourhoods(city: str) -> list[str]:
+            city_lower = city.lower()
+            if "ahmedabad" in city_lower:
+                return ["GIDC Estate", "Navrangpura", "Paldi"]
+            elif "mumbai" in city_lower:
+                return ["Andheri", "Bandra", "Commercial Chowk"]
+            elif "surat" in city_lower:
+                return ["Mini Bazar", "Hirabag", "Varachha"]
+            return ["Colony A", "Commercial Zone", "GIDC Estate"]
+
+        with patch("leadforge.sil.geo_resolver.GeoResolver.get_neighbourhoods", side_effect=mock_get_neighbourhoods) as m:
+            yield m
+
     @pytest.fixture(scope="class")
-    def gen(self) -> SearchPlanGenerator:
+    def gen(self, mock_geo_resolver) -> SearchPlanGenerator:
         return SearchPlanGenerator()
 
     def test_dentist_no_artist_variant(self, gen):

@@ -196,6 +196,7 @@ class SearchOrchestrator:
         category: str,
         limit: int,
         no_website_only: bool = False,
+        website_filter: str = "ALL",
         search_id: Optional[str] = None,
         campaign_name: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
@@ -386,6 +387,7 @@ class SearchOrchestrator:
                 settings_cache=self._settings_cache,
                 context=shared_context,
                 no_website_only=no_website_only,
+                website_filter=website_filter,
                 tier1_stats=state.tier1_rejections,
                 extraction_stats=state.extraction_stats,
             ):
@@ -473,6 +475,7 @@ class SearchOrchestrator:
                 val_res = self.validator.validate(
                     standard_lead,
                     no_website_only=no_website_only,
+                    website_filter=website_filter,
                     target_city=city,
                     target_category=category,
                     allow_temporarily_closed=allow_temp_closed,

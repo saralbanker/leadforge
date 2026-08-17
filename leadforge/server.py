@@ -1,33 +1,54 @@
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+import asyncio
+import os
+import json
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from leadforge.config import OUTPUT_DIR, LOGS_DIR
 from leadforge.main import run_pipeline
 from leadforge.utils import get_logger
 
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from leadforge.database import initialize_database
+    initialize_database()
+    yield
+
+app = FastAPI(title="LeadForge API", version="1.0", lifespan=lifespan)
 logger = get_logger()
-app = FastAPI(title="LeadForge API", version="1.0")
+
+from leadforge.enrichment.orchestrator import EmailEnrichmentOrchestrator
+enrichment_orchestrator = EmailEnrichmentOrchestrator()
+
+
+cors_origins_env = os.getenv("CORS_ALLOWED_ORIGINS")
+if cors_origins_env:
+    allowed_origins = [o.strip() for o in cors_origins_env.split(",") if o.strip()]
+else:
+    allowed_origins = [
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:3000",
+    ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=allowed_origins,
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-@app.on_event("startup")
-def startup_event():
-    from leadforge.database import initialize_database
 
-    initialize_database()
 
 
 # ── Scraper ────────────────────────────────────────────────────────────────────
@@ -38,6 +59,7 @@ class ScrapeRequest(BaseModel):
     category: str
     limit: int = 50
     no_website_only: bool = False
+    website_filter: Optional[str] = "ALL"
 
 
 task_status = {
@@ -49,7 +71,7 @@ task_status = {
 
 
 async def run_scraper_task(
-    city: str, category: str, limit: int, no_website_only: bool = False
+    city: str, category: str, limit: int, no_website_only: bool = False, website_filter: str = "ALL"
 ):
     global task_status
     try:
@@ -57,7 +79,7 @@ async def run_scraper_task(
         task_status["error"] = None
         task_status["current_task"] = f"Searching for {category} in {city}..."
         result = await run_pipeline(
-            city, category, limit, no_website_only=no_website_only
+            city, category, limit, no_website_only=no_website_only, website_filter=website_filter
         )
         task_status["last_result"] = result
         task_status["current_task"] = "Completed successfully."
@@ -73,9 +95,23 @@ async def run_scraper_task(
 async def start_scrape(req: ScrapeRequest, background_tasks: BackgroundTasks):
     if task_status["is_running"]:
         raise HTTPException(status_code=400, detail="Scraper is already running.")
-    background_tasks.add_task(
-        run_scraper_task, req.city, req.category, req.limit, req.no_website_only
-    )
+    task_status["is_running"] = True
+    task_status["error"] = None
+    task_status["current_task"] = f"Initializing search for {req.category} in {req.city}..."
+    
+    # Sync no_website_only with website_filter if website_filter is explicitly NO_WEBSITE
+    effective_no_website = req.no_website_only or (req.website_filter == "NO_WEBSITE")
+    effective_filter = req.website_filter or ("NO_WEBSITE" if effective_no_website else "ALL")
+    
+    try:
+        background_tasks.add_task(
+            run_scraper_task, req.city, req.category, req.limit, effective_no_website, effective_filter
+        )
+    except Exception as e:
+        task_status["is_running"] = False
+        task_status["current_task"] = None
+        task_status["error"] = str(e)
+        raise HTTPException(status_code=500, detail=f"Failed to start background task: {str(e)}")
     return {"message": "Scrape task started.", "status": "running"}
 
 
@@ -517,6 +553,68 @@ async def update_setting(key: str, req: SettingUpdateRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── Local LM (Ollama) Control ──────────────────────────────────────────────────
+
+
+class LLMTestRequest(BaseModel):
+    api_url: Optional[str] = None
+    model_name: Optional[str] = None
+    system_prompt: Optional[str] = None
+    prompt: Optional[str] = None
+    temperature: Optional[float] = 0.2
+    max_tokens: Optional[int] = 150
+
+
+@app.get("/api/llm/status")
+async def get_llm_status():
+    """Checks connection to local LM (Ollama) and returns installed models and settings."""
+    from leadforge.outreach.generator import OllamaHookGenerator
+    from leadforge.repositories.settings import SQLiteSettingsRepository
+
+    repo = SQLiteSettingsRepository()
+    api_url = repo.get_str("llm.api_url", "http://localhost:11434")
+    model_name = repo.get_str("llm.model_name", "llama3.2:3b")
+    enabled = repo.get_str("llm.enabled", "true").lower() in ("true", "1", "yes")
+
+    conn_status = await asyncio.to_thread(OllamaHookGenerator.test_connection, api_url)
+    return {
+        "enabled": enabled,
+        "api_url": api_url,
+        "model_name": model_name,
+        "temperature": repo.get_float("llm.temperature", 0.2),
+        "max_tokens": repo.get_int("llm.max_tokens", 150),
+        "system_prompt": repo.get_str("llm.system_prompt", ""),
+        "user_prompt_template": repo.get_str("llm.user_prompt_template", ""),
+        "connection": conn_status,
+    }
+
+
+@app.post("/api/llm/test")
+async def test_llm_inference(req: LLMTestRequest):
+    """Executes a test inference run against the local LM."""
+    from leadforge.outreach.generator import OllamaHookGenerator
+    from leadforge.repositories.settings import SQLiteSettingsRepository
+
+    repo = SQLiteSettingsRepository()
+    api_url = req.api_url or repo.get_str("llm.api_url", "http://localhost:11434")
+    model_name = req.model_name or repo.get_str("llm.model_name", "llama3.2:3b")
+    system_prompt = req.system_prompt or repo.get_str("llm.system_prompt", "")
+    temperature = req.temperature if req.temperature is not None else repo.get_float("llm.temperature", 0.2)
+    max_tokens = req.max_tokens or repo.get_int("llm.max_tokens", 150)
+
+    result = await asyncio.to_thread(
+        OllamaHookGenerator.test_inference,
+        api_url=api_url,
+        model_name=model_name,
+        system_prompt=system_prompt,
+        prompt=req.prompt,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    return result
+
+
+
 # ── Factory Reset ─────────────────────────────────────────────────────────────
 
 
@@ -577,3 +675,900 @@ async def download_file(filename: str):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename=filename,
     )
+
+
+# ── Outreach API ───────────────────────────────────────────────────────────────
+
+
+@app.get("/api/outreach/campaigns")
+async def list_campaigns():
+    """Returns the list of parsed campaigns from campaign_routing.yaml."""
+    from leadforge.outreach.router import CampaignRouter
+
+    router = CampaignRouter()
+    return router.campaigns
+
+
+@app.get("/api/outreach/drafts")
+async def list_drafts(status: Optional[str] = None):
+    """Lists email drafts joined with business names and opportunity scores."""
+    from leadforge.database import get_db_connection
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        query = """
+            SELECT ed.id, ed.opportunity_id, ed.campaign_name, ed.recipient_email, 
+                   ed.subject, ed.body, ed.status, ed.error_message, ed.sent_at, 
+                   ed.created_at, ed.updated_at,
+                   b.name as business_name, b.website_domain, b.display_phone, b.rating, b.review_count,
+                   o.score as opportunity_score
+            FROM email_drafts ed
+            JOIN opportunities o ON ed.opportunity_id = o.id
+            JOIN businesses b ON o.business_id = b.id
+        """
+        params = []
+        if status:
+            query += " WHERE ed.status = ?"
+            params.append(status)
+        query += " ORDER BY ed.created_at DESC"
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        return [dict(row) for row in rows]
+    except Exception as e:
+        logger.error(f"Error listing drafts: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.get("/api/outreach/metrics")
+async def get_outreach_metrics():
+    """Returns real-time delivery metrics: sent today, failed today, approved waiting, pending approval."""
+    from datetime import datetime, timezone
+    from leadforge.database import get_db_connection
+    from leadforge.repositories.settings import SettingsCache
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        cursor.execute(
+            "SELECT COUNT(*) FROM email_drafts WHERE status = 'SENT' AND substr(sent_at, 1, 10) = ?",
+            (today_str,),
+        )
+        sent_today = cursor.fetchone()[0]
+
+        cursor.execute(
+            "SELECT COUNT(*) FROM email_drafts WHERE status = 'FAILED' AND substr(updated_at, 1, 10) = ?",
+            (today_str,),
+        )
+        failed_today = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM email_drafts WHERE status = 'APPROVED'")
+        approved_waiting = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM email_drafts WHERE status = 'PENDING_APPROVAL'")
+        pending_approval = cursor.fetchone()[0]
+
+        settings_cache = SettingsCache()
+        daily_limit = settings_cache.get_int("outreach.daily_send_limit", 20)
+
+        return {
+            "sent_today": sent_today,
+            "failed_today": failed_today,
+            "approved_waiting": approved_waiting,
+            "pending_approval": pending_approval,
+            "daily_send_limit": daily_limit,
+        }
+    except Exception as e:
+        logger.error(f"Error fetching outreach metrics: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+class GenerateDraftRequest(BaseModel):
+    opportunity_id: str
+    force_regenerate: bool = False
+
+
+@app.post("/api/outreach/drafts/generate")
+async def generate_draft(req: GenerateDraftRequest):
+    """Crawls website, routes to campaign, generates LLM hook, and saves a draft."""
+    import uuid
+    from datetime import datetime, timezone
+    from leadforge.database import get_db_connection, append_event
+    from leadforge.outreach.discovery import WebsiteAuditor, is_duplicate_outreach
+    from leadforge.outreach.router import CampaignRouter
+    from leadforge.outreach.generator import OllamaHookGenerator
+    from leadforge.outreach.quality import EmailQualityEngine
+
+    opportunity_id = req.opportunity_id
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+
+        # Fetch opportunity details
+        cursor.execute(
+            """
+            SELECT o.id as opportunity_id, o.business_id, b.name as business_name, 
+                   b.website_domain, b.contact_email, b.rating, b.review_count,
+                   bt.name as category, a.city, a.area
+            FROM opportunities o
+            JOIN businesses b ON o.business_id = b.id
+            LEFT JOIN business_types bt ON b.business_type_id = bt.id
+            LEFT JOIN addresses a ON b.id = a.business_id
+            WHERE o.id = ?
+            """,
+            (opportunity_id,),
+        )
+        opp = cursor.fetchone()
+        if not opp:
+            raise HTTPException(status_code=404, detail="Opportunity not found.")
+
+        business_id = opp["business_id"]
+        business_name = opp["business_name"]
+        website_domain = opp["website_domain"]
+        contact_email = opp["contact_email"]
+        rating = opp["rating"] or 0.0
+        review_count = opp["review_count"] or 0
+        category = opp["category"] or ""
+        city = opp["city"] or "your city"
+
+        # Check for existing draft
+        cursor.execute("SELECT id, status FROM email_drafts WHERE opportunity_id = ?", (opportunity_id,))
+        existing = cursor.fetchone()
+        existing_draft_id = None
+        if existing:
+            if existing["status"] == "SENT":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot regenerate an email draft that has already been SENT.",
+                )
+            if not req.force_regenerate:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Draft already exists (Status: {existing['status']}). Set force_regenerate=true to overwrite.",
+                )
+            existing_draft_id = existing["id"]
+
+        # 1. Audit Website & Discover Emails
+        audit = {
+            "has_website": False,
+            "ssl_valid": False,
+            "load_time_seconds": 0.0,
+            "viewport_mobile": True,
+            "cms": "Custom",
+            "has_booking": False,
+            "discovered_emails": [],
+            "cleaned_text": "",
+        }
+        recipient_email = contact_email
+
+        if website_domain:
+            from datetime import datetime, timezone, timedelta
+            import uuid
+            now = datetime.now(timezone.utc)
+            now_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+            cache_hit = False
+
+            cursor.execute(
+                """
+                SELECT dp.id as presence_id, wa.issues_json, wa.created_at, b.contact_email
+                FROM digital_presences dp
+                JOIN businesses b ON dp.business_id = b.id
+                LEFT JOIN website_audits wa ON dp.id = wa.digital_presence_id
+                WHERE dp.business_id = ?
+                ORDER BY wa.created_at DESC LIMIT 1
+                """,
+                (business_id,),
+            )
+            cache_row = cursor.fetchone()
+
+            if cache_row and cache_row["issues_json"]:
+                try:
+                    audited_time = datetime.fromisoformat(cache_row["created_at"].replace("Z", "+00:00"))
+                    if now - audited_time < timedelta(days=7):
+                        logger.info(f"Cache hit: Using cached website audit for domain {website_domain}")
+                        audit = json.loads(cache_row["issues_json"])
+                        if audit.get("discovered_emails"):
+                            recipient_email = audit["discovered_emails"][0]
+                        else:
+                            recipient_email = cache_row["contact_email"] or contact_email
+                        cache_hit = True
+                except Exception as cache_err:
+                    logger.warning(f"Failed to load cached website audit: {cache_err}. Recrawling.")
+
+            if not cache_hit:
+                audit = await asyncio.to_thread(WebsiteAuditor.audit_website, website_domain)
+                if audit["discovered_emails"]:
+                    recipient_email = audit["discovered_emails"][0]
+
+                try:
+                    cursor.execute("SELECT id FROM digital_presences WHERE business_id = ?", (business_id,))
+                    dp_row = cursor.fetchone()
+                    if dp_row:
+                        presence_id = dp_row[0]
+                        cursor.execute(
+                            """
+                            UPDATE digital_presences 
+                            SET ssl_valid = ?, platform = ?, updated_at = ? 
+                            WHERE id = ?
+                            """,
+                            (1 if audit["ssl_valid"] else 0, audit["cms"], now_str, presence_id),
+                        )
+                    else:
+                        presence_id = str(uuid.uuid4())
+                        cursor.execute(
+                            """
+                            INSERT INTO digital_presences (id, business_id, website_url, has_website, platform, ssl_valid, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (presence_id, business_id, website_domain, 1, audit["cms"], 1 if audit["ssl_valid"] else 0, now_str, now_str),
+                        )
+
+                    audit_id = str(uuid.uuid4())
+                    cursor.execute(
+                        """
+                        INSERT INTO website_audits (id, digital_presence_id, page_speed_ms, issues_json, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            audit_id,
+                            presence_id,
+                            int(audit.get("load_time_seconds", 0.0) * 1000),
+                            json.dumps(audit),
+                            now_str,
+                            now_str,
+                        ),
+                    )
+
+                    if recipient_email and recipient_email != contact_email:
+                        cursor.execute(
+                            "UPDATE businesses SET contact_email = ?, updated_at = ? WHERE id = ?",
+                            (recipient_email, now_str, business_id),
+                        )
+                    append_event(
+                        event_type="WEBSITE_AUDITED",
+                        entity_type="Business",
+                        entity_id=business_id,
+                        payload={
+                            "has_website": audit.get("has_website"),
+                            "ssl_valid": audit.get("ssl_valid"),
+                            "load_time_seconds": audit.get("load_time_seconds"),
+                            "cms": audit.get("cms"),
+                        },
+                        conn=conn,
+                    )
+                    conn.commit()
+                except Exception as db_err:
+                    logger.error(f"Failed to cache website audit results in SQLite: {db_err}")
+
+        # If website crawl didn't yield an email, fallback to multi-provider enrichment (Justdial, IndiaMart, TradeIndia)
+        if not recipient_email:
+            try:
+                biz_profile = {
+                    "business_id": business_id,
+                    "name": business_name,
+                    "city": city,
+                    "website_domain": website_domain,
+                    "website": website_domain,
+                }
+                top_cand, _ = await enrichment_orchestrator.enrich_business(biz_profile)
+                if top_cand and top_cand.email:
+                    recipient_email = top_cand.email
+                    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    cursor.execute(
+                        "UPDATE businesses SET contact_email = ?, updated_at = ? WHERE id = ?",
+                        (recipient_email, now_str, business_id),
+                    )
+                    conn.commit()
+            except Exception as enrich_err:
+                logger.warning(f"Multi-provider enrichment error for business {business_id}: {enrich_err}")
+
+        # Log discovery attempt
+        attempt_id = str(uuid.uuid4())
+        discovery_status = "SUCCESS" if recipient_email else "NO_EMAIL_FOUND"
+        cursor.execute(
+            """
+            INSERT INTO email_discovery_attempts (id, business_id, domain, discovered_email, discovery_status)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (attempt_id, business_id, website_domain or "NO_WEBSITE", recipient_email, discovery_status),
+        )
+        if recipient_email:
+            append_event(
+                event_type="EMAIL_DISCOVERED",
+                entity_type="Business",
+                entity_id=business_id,
+                payload={"discovered_email": recipient_email, "domain": website_domain},
+                conn=conn,
+            )
+        conn.commit()
+
+        if not recipient_email:
+            raise HTTPException(
+                status_code=422,
+                detail="No contact email found. Crawl and business profile contain no email addresses.",
+            )
+
+        # 2. Campaign Routing
+        router = CampaignRouter()
+        campaign = router.route_lead(
+            category=category,
+            has_website=audit["has_website"],
+            ssl_valid=audit["ssl_valid"],
+            load_time_seconds=audit["load_time_seconds"],
+        )
+
+        if not campaign:
+            raise HTTPException(
+                status_code=422,
+                detail="No campaign matches this lead's technical profile or business category.",
+            )
+
+        # 3. Deduplication & Suppression Check
+        cursor.execute("SELECT is_suppressed FROM businesses WHERE id = ?", (business_id,))
+        b_row = cursor.fetchone()
+        if b_row and b_row["is_suppressed"] == 1:
+            raise HTTPException(
+                status_code=422,
+                detail="Opt-Out Guard: This business profile is unsubscribed and suppressed from outreach.",
+            )
+
+        if is_duplicate_outreach(business_id, email=recipient_email, domain=website_domain, exclude_draft_id=existing_draft_id):
+            raise HTTPException(
+                status_code=409,
+                detail="Deduplication Alert: This company or email has already been contacted or queued.",
+            )
+
+        # 4. Ollama Hook Generation
+        generator = OllamaHookGenerator()
+        hook = await asyncio.to_thread(
+            generator.generate_hook,
+            business_name=business_name,
+            review_count=review_count,
+            rating=rating,
+            city=city,
+            scraped_text=audit["cleaned_text"],
+            category=category,
+            area=opp["area"] if "area" in opp.keys() and opp["area"] else "",
+            has_website=bool(website_domain),
+        )
+
+        # 5. Compile copy templates
+        subject_tpl = campaign["copy_template"]["subject"]
+        body_tpl = campaign["copy_template"]["body_structure"]
+
+        subject = subject_tpl.format(business_name=business_name)
+        body = body_tpl.format(observation_hook=hook, city=city, business_name=business_name)
+
+        # 6. Quality Scoring (evaluated on core email copy)
+        quality = EmailQualityEngine.score_draft(body)
+
+        # Append compliance footer after quality scoring
+        from leadforge.repositories.settings import SettingsCache
+        from leadforge.outreach.generator import compile_compliance_footer
+        settings_cache = SettingsCache()
+        footer = compile_compliance_footer(settings_cache)
+        if footer:
+            body = body + footer
+
+        # 7. Store draft
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if existing_draft_id:
+            draft_id = existing_draft_id
+            cursor.execute(
+                """
+                UPDATE email_drafts
+                SET campaign_name = ?, recipient_email = ?, subject = ?, body = ?, status = 'PENDING_APPROVAL', error_message = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (campaign["name"], recipient_email, subject, body, now_str, draft_id),
+            )
+            append_event(
+                event_type="EMAIL_DRAFT_REGENERATED",
+                entity_type="EmailDraft",
+                entity_id=draft_id,
+                payload={
+                    "opportunity_id": opportunity_id,
+                    "campaign_name": campaign["name"],
+                    "recipient_email": recipient_email,
+                    "subject": subject,
+                },
+                conn=conn,
+            )
+        else:
+            draft_id = str(uuid.uuid4())
+            cursor.execute(
+                """
+                INSERT INTO email_drafts (id, opportunity_id, campaign_name, recipient_email, subject, body, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'PENDING_APPROVAL', ?, ?)
+                """,
+                (draft_id, opportunity_id, campaign["name"], recipient_email, subject, body, now_str, now_str),
+            )
+            append_event(
+                event_type="EMAIL_DRAFT_GENERATED",
+                entity_type="EmailDraft",
+                entity_id=draft_id,
+                payload={
+                    "opportunity_id": opportunity_id,
+                    "campaign_name": campaign["name"],
+                    "recipient_email": recipient_email,
+                    "subject": subject,
+                },
+                conn=conn,
+            )
+        conn.commit()
+
+
+        return {
+            "id": draft_id,
+            "opportunity_id": opportunity_id,
+            "campaign_name": campaign["name"],
+            "recipient_email": recipient_email,
+            "subject": subject,
+            "body": body,
+            "status": "PENDING_APPROVAL",
+            "quality_score": quality["quality_score"],
+            "quality_passed": quality["passed"],
+            "quality_issues": quality["issues"],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating draft: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/api/outreach/drafts/{draft_id}/approve")
+async def approve_draft(draft_id: str):
+    """Sets a draft status to APPROVED after state machine validation."""
+    from datetime import datetime, timezone
+    from leadforge.database import get_db_connection, append_event
+    from leadforge.execution_state import EntityStateMachine, InvalidTransitionError
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT status FROM email_drafts WHERE id = ?", (draft_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Draft not found.")
+
+        current_status = row["status"]
+        EntityStateMachine.validate_transition(
+            entity_type="EmailDraft",
+            current_state=current_status,
+            next_state="APPROVED",
+            triggering_event="EMAIL_APPROVED",
+        )
+
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cursor.execute(
+            "UPDATE email_drafts SET status = 'APPROVED', updated_at = ? WHERE id = ?", (now_str, draft_id)
+        )
+        append_event(
+            event_type="EMAIL_APPROVED",
+            entity_type="EmailDraft",
+            entity_id=draft_id,
+            payload={"status": "APPROVED", "previous_status": current_status},
+            conn=conn,
+        )
+        conn.commit()
+        return {"message": "Draft approved successfully."}
+
+    except InvalidTransitionError as ite:
+        raise HTTPException(status_code=400, detail=str(ite))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error approving draft: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/api/outreach/drafts/{draft_id}/reject")
+async def reject_draft(draft_id: str):
+    """Sets a draft status to REJECTED after state machine validation."""
+    from datetime import datetime, timezone
+    from leadforge.database import get_db_connection, append_event
+    from leadforge.execution_state import EntityStateMachine, InvalidTransitionError
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT status FROM email_drafts WHERE id = ?", (draft_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Draft not found.")
+
+        current_status = row["status"]
+        EntityStateMachine.validate_transition(
+            entity_type="EmailDraft",
+            current_state=current_status,
+            next_state="REJECTED",
+            triggering_event="EMAIL_REJECTED",
+        )
+
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cursor.execute(
+            "UPDATE email_drafts SET status = 'REJECTED', updated_at = ? WHERE id = ?", (now_str, draft_id)
+        )
+        append_event(
+            event_type="EMAIL_REJECTED",
+            entity_type="EmailDraft",
+            entity_id=draft_id,
+            payload={"status": "REJECTED", "previous_status": current_status},
+            conn=conn,
+        )
+        conn.commit()
+        return {"message": "Draft rejected."}
+
+    except InvalidTransitionError as ite:
+        raise HTTPException(status_code=400, detail=str(ite))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error rejecting draft: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+class UpdateDraftRequest(BaseModel):
+    subject: Optional[str] = None
+    body: Optional[str] = None
+    recipient_email: Optional[str] = None
+
+
+@app.put("/api/outreach/drafts/{draft_id}")
+async def update_draft(draft_id: str, req: UpdateDraftRequest):
+    """Updates subject, body, or recipient email of an existing draft."""
+    from datetime import datetime, timezone
+    from leadforge.database import get_db_connection, append_event
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, status, subject, body, recipient_email FROM email_drafts WHERE id = ?", (draft_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Draft not found.")
+
+        if row["status"] == "SENT":
+            raise HTTPException(status_code=400, detail="Cannot edit a draft that has already been SENT.")
+
+        new_subject = req.subject if req.subject is not None else row["subject"]
+        new_body = req.body if req.body is not None else row["body"]
+        new_email = req.recipient_email if req.recipient_email is not None else row["recipient_email"]
+
+        from leadforge.outreach.quality import EmailQualityEngine
+        quality = EmailQualityEngine.score_draft(new_body)
+
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cursor.execute(
+            """
+            UPDATE email_drafts
+            SET subject = ?, body = ?, recipient_email = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (new_subject, new_body, new_email, now_str, draft_id),
+        )
+        append_event(
+            event_type="EMAIL_DRAFT_UPDATED",
+            entity_type="EmailDraft",
+            entity_id=draft_id,
+            payload={
+                "subject": new_subject,
+                "recipient_email": new_email,
+                "quality_score": quality["quality_score"],
+            },
+            conn=conn,
+        )
+        conn.commit()
+        return {
+            "message": "Draft updated successfully.",
+            "id": draft_id,
+            "subject": new_subject,
+            "body": new_body,
+            "recipient_email": new_email,
+            "quality_score": quality["quality_score"],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating draft: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+class BulkApproveRequest(BaseModel):
+    draft_ids: Optional[List[str]] = None
+
+
+@app.post("/api/outreach/drafts/bulk-approve")
+async def bulk_approve_drafts(req: Optional[BulkApproveRequest] = None):
+    """Bulk approves pending email drafts."""
+    from datetime import datetime, timezone
+    from leadforge.database import get_db_connection, append_event
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        if req and req.draft_ids:
+            placeholders = ",".join(["?"] * len(req.draft_ids))
+            cursor.execute(
+                f"SELECT id FROM email_drafts WHERE status = 'PENDING_APPROVAL' AND id IN ({placeholders})",
+                req.draft_ids,
+            )
+        else:
+            cursor.execute("SELECT id FROM email_drafts WHERE status = 'PENDING_APPROVAL'")
+
+        rows = cursor.fetchall()
+        approved_count = 0
+
+        for row in rows:
+            draft_id = row["id"]
+            cursor.execute(
+                "UPDATE email_drafts SET status = 'APPROVED', updated_at = ? WHERE id = ?",
+                (now_str, draft_id),
+            )
+            append_event(
+                event_type="EMAIL_APPROVED",
+                entity_type="EmailDraft",
+                entity_id=draft_id,
+                payload={"status": "APPROVED", "bulk": True},
+                conn=conn,
+            )
+            approved_count += 1
+
+        conn.commit()
+        return {"message": f"Successfully approved {approved_count} drafts.", "approved_count": approved_count}
+    except Exception as e:
+        logger.error(f"Error bulk approving drafts: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/api/outreach/drafts/{draft_id}/retry")
+async def retry_draft(draft_id: str):
+    """Sets a FAILED draft back to APPROVED so it can be retried in the next delivery dispatch run."""
+    from datetime import datetime, timezone
+    from leadforge.database import get_db_connection, append_event
+    from leadforge.execution_state import EntityStateMachine, InvalidTransitionError
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT status FROM email_drafts WHERE id = ?", (draft_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Draft not found.")
+
+        current_status = row["status"]
+        if current_status != "FAILED":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Only drafts with status FAILED can be retried. Current status is {current_status}.",
+            )
+
+        EntityStateMachine.validate_transition(
+            entity_type="EmailDraft",
+            current_state=current_status,
+            next_state="APPROVED",
+            triggering_event="EMAIL_RETRIED",
+        )
+
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cursor.execute(
+            "UPDATE email_drafts SET status = 'APPROVED', error_message = NULL, updated_at = ? WHERE id = ?",
+            (now_str, draft_id),
+        )
+        append_event(
+            event_type="EMAIL_APPROVED",
+            entity_type="EmailDraft",
+            entity_id=draft_id,
+            payload={"status": "APPROVED", "retried_from": "FAILED"},
+            conn=conn,
+        )
+        conn.commit()
+        return {"message": "Draft queued for retry successfully."}
+    except InvalidTransitionError as ite:
+        raise HTTPException(status_code=400, detail=str(ite))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrying draft: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+
+def run_delivery_task():
+    """Background helper to execute the SMTP delivery queue."""
+    from leadforge.outreach.deliverer import SMTPEmailDeliverer
+
+    try:
+        deliverer = SMTPEmailDeliverer()
+        sent = deliverer.send_approved_drafts()
+        logger.info(f"Background SMTP delivery finished. Sent: {sent} emails.")
+    except Exception as e:
+        logger.error(f"Background SMTP delivery error: {str(e)}")
+
+
+@app.post("/api/outreach/deliver")
+async def trigger_delivery(background_tasks: BackgroundTasks):
+    """Triggers background sending of all APPROVED email drafts."""
+    background_tasks.add_task(run_delivery_task)
+    return {"message": "SMTP delivery task started in background."}
+
+
+@app.get("/api/outreach/unsubscribe/{business_id}")
+@app.post("/api/outreach/unsubscribe/{business_id}")
+async def unsubscribe_lead(business_id: str):
+    """Processes opt-out request: flags business profile as suppressed and records UNSUBSCRIBED event."""
+    from datetime import datetime, timezone
+    from leadforge.database import get_db_connection, append_event
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name, contact_email FROM businesses WHERE id = ?", (business_id,))
+        biz = cursor.fetchone()
+        if not biz:
+            raise HTTPException(status_code=404, detail="Business profile not found.")
+
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        cursor.execute(
+            "UPDATE businesses SET is_suppressed = 1, updated_at = ? WHERE id = ?",
+            (now_str, business_id),
+        )
+        append_event(
+            event_type="UNSUBSCRIBED",
+            entity_type="Business",
+            entity_id=business_id,
+            payload={
+                "business_name": biz["name"],
+                "contact_email": biz["contact_email"],
+                "unsubscribed_at": now_str,
+            },
+            conn=conn,
+        )
+        conn.commit()
+        return {
+            "message": "You have been successfully unsubscribed from future outreach.",
+            "business_id": business_id,
+            "status": "SUPPRESSED",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error executing unsubscribe for business {business_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.get("/api/enrichment/stats")
+async def get_enrichment_stats():
+    """Returns telemetry metrics for business email enrichment."""
+    from leadforge.database import get_db_connection
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM email_discovery_attempts WHERE discovery_status = 'SUCCESS'")
+        success_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM email_discovery_attempts")
+        total_attempts = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM businesses WHERE contact_email IS NOT NULL AND contact_email != ''")
+        businesses_with_email = cursor.fetchone()[0]
+        return {
+            "total_attempts": total_attempts,
+            "successful_discoveries": success_count,
+            "businesses_with_email": businesses_with_email,
+        }
+    finally:
+        conn.close()
+
+
+class ThreadCreateRequest(BaseModel):
+    business_id: str
+    campaign_name: str = "General Outreach"
+
+
+class InboundCommunicationRequest(BaseModel):
+    thread_id: str
+    sender_email: str
+    subject: str = "Re: Outreach"
+    body_text: str
+
+
+@app.post("/api/communication/threads")
+async def create_communication_thread(req: ThreadCreateRequest):
+    """Creates a new communication thread for a business."""
+    from leadforge.communication.repository import SQLiteCommunicationRepository
+    repo = SQLiteCommunicationRepository()
+    thread = repo.create_thread(business_id=req.business_id, campaign_name=req.campaign_name)
+    return {
+        "id": thread.id,
+        "business_id": thread.business_id,
+        "campaign_name": thread.campaign_name,
+        "current_state": thread.current_state,
+        "created_at": thread.created_at,
+    }
+
+
+@app.post("/api/communication/inbound")
+async def process_inbound_communication(req: InboundCommunicationRequest):
+    """Ingests and classifies an inbound communication reply."""
+    from leadforge.communication.repository import SQLiteCommunicationRepository
+    from leadforge.communication.classifier import LLMReplyClassifier
+    from leadforge.communication.optout import OptOutManager
+
+    repo = SQLiteCommunicationRepository()
+    classifier = LLMReplyClassifier()
+    optout = OptOutManager(repository=repo)
+
+    label = classifier.classify_reply(req.body_text)
+
+    msg = repo.add_message(
+        thread_id=req.thread_id,
+        direction="INBOUND",
+        sender_email=req.sender_email,
+        recipient_email="outreach@leadforge.ai",
+        subject=req.subject,
+        body_text=req.body_text,
+        classification_label=label,
+    )
+
+    if label == "UNSUBSCRIBE":
+        optout.process_opt_out(req.sender_email, thread_id=req.thread_id)
+
+    return {
+        "id": msg.id,
+        "thread_id": msg.thread_id,
+        "classification_label": label,
+        "created_at": msg.created_at,
+    }
+
+
+@app.get("/api/communication/stats")
+async def get_communication_stats():
+    """Returns telemetry metrics for communication threads and messages."""
+    from leadforge.database import get_db_connection
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM communication_threads")
+        total_threads = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM communication_messages WHERE direction = 'OUTBOUND'")
+        outbound_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM communication_messages WHERE direction = 'INBOUND'")
+        inbound_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM unsubscribe_suppressions")
+        optout_count = cursor.fetchone()[0]
+        return {
+            "total_threads": total_threads,
+            "outbound_messages": outbound_count,
+            "inbound_messages": inbound_count,
+            "unsubscribes": optout_count,
+        }
+    finally:
+        conn.close()
+
+
+
+
+

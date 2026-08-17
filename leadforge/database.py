@@ -2,8 +2,10 @@ import sqlite3
 import os
 import time
 import uuid
+import json
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional, Union, Dict, List, Any
 import pandas as pd
 from leadforge.config import BASE_DIR, OUTPUT_DIR
 from leadforge.utils import get_logger, clean_text
@@ -34,7 +36,8 @@ def uuidv7() -> str:
 
 def get_db_connection() -> sqlite3.Connection:
     """Establishes connection to the SQLite database and configures WAL/FKs."""
-    conn = sqlite3.connect(DB_PATH)
+    path = os.environ.get("LEADFORGE_DB_PATH") or str(DB_PATH)
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
 
     # Configure SQLite pragmas
@@ -43,6 +46,72 @@ def get_db_connection() -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous = NORMAL;")
 
     return conn
+
+
+def append_event(
+    event_type: str,
+    entity_type: str,
+    entity_id: str,
+    payload: Optional[Union[Dict[str, Any], List[Any], str]] = None,
+    event_version: int = 1,
+    conn: Optional[sqlite3.Connection] = None,
+) -> str:
+    """Appends an immutable record to event_store using UUIDv7 primary key.
+
+    Args:
+        event_type: Identifier of the event type (e.g., 'LEAD_CREATED').
+        entity_type: Target entity model name (e.g., 'Lead', 'Opportunity').
+        entity_id: Primary key of target entity.
+        payload: Event data context (dictionary, string, or None).
+        event_version: Schema version for event payload structure (default 1).
+        conn: Optional existing sqlite3.Connection context.
+
+    Returns:
+        The generated UUIDv7 event_id string.
+    """
+    event_id = uuidv7()
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+    if payload is None:
+        payload_str = "{}"
+    elif isinstance(payload, str):
+        payload_str = payload
+    else:
+        try:
+            payload_str = json.dumps(payload, default=str)
+        except Exception:
+            payload_str = str(payload)
+
+    query = """
+        INSERT INTO event_store (
+            event_id, event_type, entity_type, entity_id, timestamp, payload, event_version, processed_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+    """
+    params = (
+        event_id,
+        str(event_type),
+        str(entity_type),
+        str(entity_id),
+        timestamp,
+        payload_str,
+        int(event_version),
+    )
+
+    if conn is not None:
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+    else:
+        db_conn = get_db_connection()
+        try:
+            cursor = db_conn.cursor()
+            cursor.execute(query, params)
+            db_conn.commit()
+        finally:
+            db_conn.close()
+
+    logger.info(f"Event logged [{event_type}] for {entity_type}:{entity_id} (id={event_id})")
+    return event_id
+
 
 
 def initialize_database():
@@ -297,6 +366,15 @@ def bootstrap_legacy_data(conn: sqlite3.Connection):
                             business_type_id,
                         ),
                     )
+
+                    append_event(
+                        event_type="BUSINESS_DISCOVERED",
+                        entity_type="Business",
+                        entity_id=business_id,
+                        payload={"name": name, "category": category_name, "source": "MANUAL_IMPORT"},
+                        conn=conn,
+                    )
+
 
                     # Insert address
                     cursor.execute(

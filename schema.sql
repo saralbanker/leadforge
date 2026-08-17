@@ -301,6 +301,18 @@ CREATE TABLE audit_logs (
     occurred_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+CREATE TABLE event_store (
+    event_id TEXT PRIMARY KEY CHECK(length(event_id) = 36), -- UUIDv7
+    event_type TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    payload TEXT NOT NULL DEFAULT '{}',
+    event_version INTEGER NOT NULL DEFAULT 1 CHECK(event_version >= 1),
+    processed_status INTEGER NOT NULL DEFAULT 0 CHECK(processed_status IN (0, 1))
+);
+
+
 -- ============================================================================
 -- 8. SYSTEM SETTINGS & PREFERENCES CONTEXT
 -- ============================================================================
@@ -366,6 +378,9 @@ CREATE INDEX idx_businesses_display_phone ON businesses(display_phone) WHERE dis
 CREATE INDEX idx_opportunities_stage ON opportunities(pipeline_stage);
 CREATE INDEX idx_audit_logs_lookup ON audit_logs(entity_type, entity_id);
 CREATE INDEX idx_audit_logs_occurred_at ON audit_logs(occurred_at);
+CREATE INDEX idx_events_type_entity ON event_store(entity_type, entity_id);
+CREATE INDEX idx_events_unprocessed ON event_store(processed_status, timestamp);
+
 
 -- ============================================================================
 -- SYSTEM UPDATE TRIGGERS (Automated Metadata Operations)
@@ -442,3 +457,312 @@ END;
 CREATE TRIGGER trg_user_preferences_updated_at AFTER UPDATE ON user_preferences FOR EACH ROW BEGIN
     UPDATE user_preferences SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = OLD.id;
 END;
+
+CREATE TRIGGER trg_event_store_no_update BEFORE UPDATE ON event_store FOR EACH ROW BEGIN
+    SELECT RAISE(FAIL, 'event_store records are immutable');
+END;
+
+CREATE TRIGGER trg_event_store_no_delete BEFORE DELETE ON event_store FOR EACH ROW BEGIN
+    SELECT RAISE(FAIL, 'event_store records are immutable');
+END;
+
+-- ============================================================================
+-- RELATIONAL KNOWLEDGE GRAPH TABLES (LF-INT-001)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS industry_profiles (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    code TEXT NOT NULL UNIQUE,
+    description TEXT,
+    avg_contract_value REAL DEFAULT 0.0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pain_patterns (
+    id TEXT PRIMARY KEY,
+    industry_profile_id TEXT NOT NULL REFERENCES industry_profiles(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    description TEXT,
+    severity TEXT CHECK(severity IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')) DEFAULT 'MEDIUM',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS objection_patterns (
+    id TEXT PRIMARY KEY,
+    industry_profile_id TEXT NOT NULL REFERENCES industry_profiles(id) ON DELETE CASCADE,
+    objection_type TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    suggested_response TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS offer_patterns (
+    id TEXT PRIMARY KEY,
+    industry_profile_id TEXT NOT NULL REFERENCES industry_profiles(id) ON DELETE CASCADE,
+    service_name TEXT NOT NULL,
+    value_proposition TEXT NOT NULL,
+    typical_price REAL DEFAULT 0.0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS reply_patterns (
+    id TEXT PRIMARY KEY,
+    pattern_category TEXT NOT NULL,
+    example_text TEXT NOT NULL,
+    sentiment TEXT CHECK(sentiment IN ('POSITIVE', 'NEUTRAL', 'NEGATIVE')) DEFAULT 'NEUTRAL',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS case_studies (
+    id TEXT PRIMARY KEY,
+    industry_profile_id TEXT NOT NULL REFERENCES industry_profiles(id) ON DELETE CASCADE,
+    client_pseudonym TEXT NOT NULL,
+    headline TEXT NOT NULL,
+    metrics_achieved TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS business_insights (
+    id TEXT PRIMARY KEY,
+    business_id TEXT REFERENCES businesses(id) ON DELETE SET NULL,
+    insight_type TEXT NOT NULL,
+    content TEXT NOT NULL,
+    confidence_score REAL DEFAULT 1.0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_items (
+    id TEXT PRIMARY KEY,
+    topic TEXT NOT NULL,
+    key_name TEXT NOT NULL UNIQUE,
+    value_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS offer_pain_mappings (
+    offer_pattern_id TEXT NOT NULL REFERENCES offer_patterns(id) ON DELETE CASCADE,
+    pain_pattern_id TEXT NOT NULL REFERENCES pain_patterns(id) ON DELETE CASCADE,
+    relevance_score REAL DEFAULT 1.0,
+    PRIMARY KEY (offer_pattern_id, pain_pattern_id)
+);
+
+CREATE TABLE IF NOT EXISTS insight_pain_mappings (
+    insight_id TEXT NOT NULL REFERENCES business_insights(id) ON DELETE CASCADE,
+    pain_pattern_id TEXT NOT NULL REFERENCES pain_patterns(id) ON DELETE CASCADE,
+    PRIMARY KEY (insight_id, pain_pattern_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_industry_profiles_code ON industry_profiles(code);
+CREATE INDEX IF NOT EXISTS idx_pain_patterns_industry ON pain_patterns(industry_profile_id);
+CREATE INDEX IF NOT EXISTS idx_objection_patterns_industry ON objection_patterns(industry_profile_id);
+CREATE INDEX IF NOT EXISTS idx_offer_patterns_industry ON offer_patterns(industry_profile_id);
+CREATE INDEX IF NOT EXISTS idx_case_studies_industry ON case_studies(industry_profile_id);
+CREATE INDEX IF NOT EXISTS idx_business_insights_business ON business_insights(business_id);
+CREATE INDEX IF NOT EXISTS idx_knowledge_items_topic ON knowledge_items(topic);
+
+-- ============================================================================
+-- RELATIONAL KNOWLEDGE VERSIONING TABLES (LF-INT-002)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS knowledge_item_versions (
+    id TEXT PRIMARY KEY,
+    key_name TEXT NOT NULL,
+    version_number INTEGER NOT NULL,
+    previous_version_id TEXT REFERENCES knowledge_item_versions(id) ON DELETE RESTRICT,
+    topic TEXT NOT NULL,
+    value_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    created_by TEXT CHECK(created_by IN ('FOUNDER', 'SYSTEM')) DEFAULT 'FOUNDER',
+    status TEXT CHECK(status IN ('DRAFT', 'ACTIVE', 'DEPRECATED', 'ARCHIVED')) DEFAULT 'DRAFT',
+    change_reason TEXT,
+    confidence_score REAL DEFAULT 1.0,
+    evidence_reference TEXT,
+    UNIQUE(key_name, version_number)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_item_versions_unique_active
+ON knowledge_item_versions(key_name)
+WHERE status = 'ACTIVE';
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_item_versions_key_status
+ON knowledge_item_versions(key_name, status);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_item_versions_created_at
+ON knowledge_item_versions(created_at);
+
+CREATE TABLE IF NOT EXISTS industry_profile_versions (
+    id TEXT PRIMARY KEY,
+    code TEXT NOT NULL,
+    version_number INTEGER NOT NULL,
+    previous_version_id TEXT REFERENCES industry_profile_versions(id) ON DELETE RESTRICT,
+    name TEXT NOT NULL,
+    description TEXT,
+    avg_contract_value REAL DEFAULT 0.0,
+    created_at TEXT NOT NULL,
+    created_by TEXT CHECK(created_by IN ('FOUNDER', 'SYSTEM')) DEFAULT 'FOUNDER',
+    status TEXT CHECK(status IN ('DRAFT', 'ACTIVE', 'DEPRECATED', 'ARCHIVED')) DEFAULT 'DRAFT',
+    change_reason TEXT,
+    confidence_score REAL DEFAULT 1.0,
+    evidence_reference TEXT,
+    UNIQUE(code, version_number)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_industry_profile_versions_unique_active
+ON industry_profile_versions(code)
+WHERE status = 'ACTIVE';
+
+CREATE INDEX IF NOT EXISTS idx_industry_profile_versions_code_status
+ON industry_profile_versions(code, status);
+
+-- ============================================================================
+-- LEARNING ENGINE TASK QUEUE & ORCHESTRATION SCHEMA (LF-LRN-001)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS learning_tasks (
+    id TEXT PRIMARY KEY,
+    source_entity TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    learning_type TEXT NOT NULL,
+    priority INTEGER DEFAULT 50,
+    status TEXT CHECK(status IN ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'CANCELLED')) DEFAULT 'PENDING',
+    retry_count INTEGER DEFAULT 0,
+    max_retries INTEGER DEFAULT 3,
+    created_at TEXT NOT NULL,
+    scheduled_at TEXT NOT NULL,
+    last_attempt_at TEXT,
+    failure_reason TEXT,
+    payload_json TEXT DEFAULT '{}',
+    UNIQUE(source_entity, entity_id, learning_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_learning_tasks_status_priority
+ON learning_tasks(status, priority DESC, scheduled_at ASC);
+
+CREATE INDEX IF NOT EXISTS idx_learning_tasks_source_entity
+ON learning_tasks(source_entity, entity_id);
+
+CREATE INDEX IF NOT EXISTS idx_learning_tasks_scheduled
+ON learning_tasks(scheduled_at);
+
+-- ============================================================================
+-- SEARCH INTELLIGENCE GEOGRAPHIC CACHE SCHEMA (LF-SIL-008)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS sil_geo_cache (
+    id          TEXT PRIMARY KEY CHECK(length(id) = 36),
+    city        TEXT NOT NULL,
+    place_name  TEXT NOT NULL,
+    place_type  TEXT NOT NULL,
+    fetched_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S.%fZ', 'now')),
+    UNIQUE(city, place_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sil_geo_cache_city
+ON sil_geo_cache(city);
+
+-- ============================================================================
+-- CAMPAIGN PLAN METRICS SCHEMA (LF-CMP-009)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS campaign_plan_metrics (
+    id                   TEXT    PRIMARY KEY CHECK(length(id) = 36),
+    search_id            TEXT    NOT NULL,
+    plan_idx             INTEGER NOT NULL CHECK(plan_idx >= 0),
+    search_query         TEXT    NOT NULL,
+    canonical_category   TEXT    NOT NULL,
+    geographic_partition TEXT    NOT NULL,
+    urls_discovered      INTEGER NOT NULL DEFAULT 0 CHECK(urls_discovered >= 0),
+    discovery_duplicates INTEGER NOT NULL DEFAULT 0 CHECK(discovery_duplicates >= 0),
+    discovery_duration_s REAL    NOT NULL DEFAULT 0.0 CHECK(discovery_duration_s >= 0.0),
+    urls_processed       INTEGER NOT NULL DEFAULT 0 CHECK(urls_processed >= 0),
+    qualified            INTEGER NOT NULL DEFAULT 0 CHECK(qualified >= 0),
+    consumer_duplicates  INTEGER NOT NULL DEFAULT 0 CHECK(consumer_duplicates >= 0),
+    website_rejections   INTEGER NOT NULL DEFAULT 0 CHECK(website_rejections >= 0),
+    phone_rejections     INTEGER NOT NULL DEFAULT 0 CHECK(phone_rejections >= 0),
+    validation_failures  INTEGER NOT NULL DEFAULT 0 CHECK(validation_failures >= 0),
+    processing_duration_s REAL   NOT NULL DEFAULT 0.0 CHECK(processing_duration_s >= 0.0),
+    yield_percentage     REAL    NOT NULL DEFAULT 0.0,
+    duplicate_percentage REAL    NOT NULL DEFAULT 0.0,
+    recorded_at          TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(search_id, plan_idx)
+);
+
+CREATE INDEX IF NOT EXISTS idx_campaign_plan_metrics_search_id
+    ON campaign_plan_metrics(search_id);
+
+-- ============================================================================
+-- OUTREACH EXTENSION & EMAIL DISCOVERY SCHEMA (LF-OUT-010)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS email_discovery_attempts (
+    id                   TEXT    PRIMARY KEY CHECK(length(id) = 36),
+    business_id          TEXT    NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+    domain               TEXT    NOT NULL,
+    discovered_email     TEXT,
+    discovery_status     TEXT    NOT NULL CHECK(discovery_status IN ('SUCCESS', 'NO_EMAIL_FOUND')),
+    last_attempt_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS email_drafts (
+    id                   TEXT    PRIMARY KEY CHECK(length(id) = 36),
+    opportunity_id       TEXT    NOT NULL REFERENCES opportunities(id) ON DELETE CASCADE,
+    campaign_name        TEXT    NOT NULL,
+    recipient_email      TEXT    NOT NULL,
+    subject              TEXT    NOT NULL,
+    body                 TEXT    NOT NULL,
+    status               TEXT    NOT NULL CHECK(status IN ('PENDING_APPROVAL', 'APPROVED', 'SENT', 'FAILED', 'REJECTED')) DEFAULT 'PENDING_APPROVAL',
+    error_message        TEXT,
+    sent_at              TEXT,
+    created_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_discovery_attempts_business
+    ON email_discovery_attempts(business_id);
+
+CREATE INDEX IF NOT EXISTS idx_email_drafts_status
+    ON email_drafts(status);
+
+CREATE INDEX IF NOT EXISTS idx_email_drafts_opportunity
+    ON email_drafts(opportunity_id);
+
+CREATE INDEX IF NOT EXISTS idx_email_drafts_recipient
+    ON email_drafts(recipient_email);
+
+-- ============================================================================
+-- A/B CAMPAIGN TESTING SCHEMA (LF-EXP-001)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS experiments (
+    id                    TEXT PRIMARY KEY CHECK(length(id) = 36),
+    name                  TEXT NOT NULL UNIQUE,
+    hypothesis            TEXT NOT NULL,
+    variable_type         TEXT NOT NULL CHECK(variable_type IN ('SUBJECT', 'BODY_HOOK', 'CTA', 'SEQUENCE_DELAY')),
+    control_value         TEXT NOT NULL,
+    variant_value         TEXT NOT NULL,
+    sample_size_required  INTEGER NOT NULL DEFAULT 100 CHECK(sample_size_required > 0),
+    control_sent_count    INTEGER NOT NULL DEFAULT 0 CHECK(control_sent_count >= 0),
+    variant_sent_count    INTEGER NOT NULL DEFAULT 0 CHECK(variant_sent_count >= 0),
+    control_success_count INTEGER NOT NULL DEFAULT 0 CHECK(control_success_count >= 0),
+    variant_success_count INTEGER NOT NULL DEFAULT 0 CHECK(variant_success_count >= 0),
+    status                TEXT NOT NULL CHECK(status IN ('DRAFT', 'RUNNING', 'COMPLETED', 'PAUSED')) DEFAULT 'RUNNING',
+    p_value               REAL,
+    winning_value         TEXT,
+    created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_experiments_status
+ON experiments(status);
+
+CREATE INDEX IF NOT EXISTS idx_experiments_name
+ON experiments(name);
+
+
+
+
+
+

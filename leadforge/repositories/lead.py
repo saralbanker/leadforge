@@ -2,7 +2,7 @@ from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse
 from datetime import datetime, timezone
 import json
-from leadforge.database import get_db_connection, uuidv7
+from leadforge.database import get_db_connection, uuidv7, append_event
 from leadforge.repositories.base import LeadRepositoryInterface, RepositoryException
 from leadforge.utils import clean_text, extract_place_id
 from leadforge.normalizer import (
@@ -243,6 +243,18 @@ class SQLiteLeadRepository(LeadRepositoryInterface):
                     now_str,
                     now_str,
                 ),
+            )
+
+            append_event(
+                event_type="BUSINESS_DISCOVERED",
+                entity_type="Business",
+                entity_id=business_id,
+                payload={
+                    "name": lead_data.get("name"),
+                    "category": category_name,
+                    "campaign": campaign_name,
+                },
+                conn=conn,
             )
 
             # 3. Insert Address

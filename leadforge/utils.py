@@ -2,7 +2,7 @@ import logging
 import re
 import sys
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from leadforge.config import LOGS_DIR
 
 # Configure Logging
@@ -106,3 +106,30 @@ def clean_text(text: Any) -> str:
     if not text_str.strip() or text_str.lower() == "nan":
         return ""
     return " ".join(text_str.split())
+
+
+def uuidv7() -> str:
+    """Generates a UUIDv7 string (36 characters) conforming to time-ordered UUIDv7 standard."""
+    from leadforge.database import uuidv7 as _uuidv7
+    return _uuidv7()
+
+
+def append_event(
+    event_type: str,
+    entity_type: str,
+    entity_id: str,
+    payload: Optional[Union[Dict[str, Any], List[Any], str]] = None,
+    event_version: int = 1,
+    conn: Optional[Any] = None,
+) -> str:
+    """Helper function to log synchronous events into the Ground Truth event store."""
+    from leadforge.database import append_event as _append_event
+    return _append_event(
+        event_type=event_type,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        payload=payload,
+        event_version=event_version,
+        conn=conn,
+    )
+

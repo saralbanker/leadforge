@@ -24,6 +24,7 @@ async def run_pipeline(
     limit: int,
     output_file: str = None,
     no_website_only: bool = False,
+    website_filter: str = "ALL",
 ) -> dict:
     """Main lead generation pipeline with SQLite persistence."""
     # 1. Initialize database & run migrations on startup
@@ -50,10 +51,10 @@ async def run_pipeline(
     logger.info("=" * 60)
     logger.info("⚡ LEADFORGE - BUSINESS DISCOVERY & LEAD GENERATION")
     logger.info("=" * 60)
-    logger.info(f"City:         {city}")
-    logger.info(f"Category:     {category}")
-    logger.info(f"Limit:        {limit}")
-    logger.info(f"No-website:   {no_website_only}")
+    logger.info(f"City:           {city}")
+    logger.info(f"Category:       {category}")
+    logger.info(f"Limit:          {limit}")
+    logger.info(f"Website-filter: {website_filter}")
     logger.info("-" * 60)
 
     # Initialize a RUNNING search run log entry in the database
@@ -92,6 +93,7 @@ async def run_pipeline(
             category=category,
             limit=limit,
             no_website_only=no_website_only,
+            website_filter=website_filter,
             search_id=search_id,
             campaign_name=output_file,
         )

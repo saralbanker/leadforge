@@ -610,6 +610,7 @@ async def test_scraper_orchestrator_mock():
         settings_cache=None,
         context=None,
         no_website_only=False,
+        website_filter="ALL",
         tier1_stats=None,
         extraction_stats=None,
     ):

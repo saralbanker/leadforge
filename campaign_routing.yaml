@@ -1,0 +1,74 @@
+# LeadForge Campaign & Offer Routing Configurations
+# Modify categories and templates here to adapt outreach targets without editing python code.
+
+campaigns:
+  - name: "Manufacturing - Direct RFQ & Plant Capability"
+    target_offer: "Custom B2B Industrial Catalog & Technical RFQ Portal"
+    criteria:
+      has_website: false
+      categories:
+        - "Manufacturers"
+        - "Manufacturing"
+        - "Engineering Works"
+        - "Fabricators"
+        - "CNC Machining & Precision Engineering"
+        - "Chemical & Dyes Manufacturers"
+        - "Plastic Moulding & Polymer Packaging"
+        - "Transformer & Electrical Panel Manufacturers"
+        - "Diamond Tooling & Laser Cutting"
+        - "Steel & Metal Fabrication Works"
+        - "Auto Components & Forging Works"
+        - "Pharmaceutical Packaging Machinery"
+        - "Industrial Machinery"
+    copy_template:
+      subject: "RFQ question re: {business_name}"
+      body_structure: "{observation_hook} When procurement managers search for reliable manufacturing partners in {city}, they look for machine specs and an easy way to submit technical drawings. Without a direct technical catalog, buyers usually default to listed competitors. We build clean, fast-loading digital capability sheets and RFQ portals for industrial units. Do you take drawing submissions mostly over WhatsApp or do you have an online portal?"
+
+  - name: "Manufacturing - B2B Dealer & Order Portal"
+    target_offer: "Custom B2B Dealer Order Entry & Dispatch Portal"
+    criteria:
+      has_website: true
+      categories:
+        - "Manufacturers"
+        - "Manufacturing"
+        - "Wholesalers"
+        - "Distributors"
+        - "Chemical & Dyes Manufacturers"
+        - "Plastic Moulding & Polymer Packaging"
+        - "Auto Components & Forging Works"
+    copy_template:
+      subject: "dealer orders re: {business_name}"
+      body_structure: "{observation_hook} Taking recurring dealer orders and catalog inquiries manually through phone calls or WhatsApp files creates dispatch delays and manual entry mistakes. We build simple B2B client order portals that let your buyers place batch orders directly into your queue. Do you handle repeat wholesale orders mostly over WhatsApp right now?"
+
+  - name: "Campaign A (General No Website)"
+    target_offer: "Professional Website Design & Speed Optimization"
+    criteria:
+      has_website: false
+      ssl_valid: false
+      max_load_time_seconds: 4.0
+    copy_template:
+      subject: "question regarding {business_name}"
+      body_structure: "{observation_hook} Without a fast, mobile-friendly landing page, potential customers searching in {city} will likely end up on competitor profiles. We design clean, high-performance websites for local businesses to lock down local search traffic. Do you take customer inquiries mostly by phone or online?"
+
+  - name: "Campaign B (Booking)"
+    target_offer: "Custom Software Integration & Appointment Booking Portals"
+    criteria:
+      has_website: true
+      categories:
+        - "Clinics"
+        - "Dentists"
+        - "Doctors"
+        - "Salons"
+        - "Consultants"
+    copy_template:
+      subject: "scheduling at {business_name}"
+      body_structure: "{observation_hook} Without an instant booking widget, clients searching for scheduling options often click away. We build custom scheduling portals that integrate directly with your Google Maps profile to reduce drop-off. Do you take bookings online or mostly by phone?"
+
+  - name: "General Outreach (Digital Performance)"
+    target_offer: "Digital Experience & Conversion Rate Optimization"
+    criteria:
+      has_website: true
+    copy_template:
+      subject: "quick question re: {business_name}"
+      body_structure: "{observation_hook} Most local customers searching in {city} browse on their phones before making a decision. We help established businesses improve their online conversion rate and customer inquiry flow. Are you currently taking on new orders this month?"
+

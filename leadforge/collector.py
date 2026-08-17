@@ -109,6 +109,7 @@ async def _scrape_page(
     idx: int,
     total: int,
     no_website_only: bool = False,
+    website_filter: str = "ALL",
     tier1_stats: Optional[Dict[str, int]] = None,
     extraction_stats: Optional[Dict[str, int]] = None,
 ) -> Optional[Dict[str, Any]]:
@@ -171,11 +172,20 @@ async def _scrape_page(
         _bump(tier1_stats, "NO_PHONE")
         return None
 
-    if no_website_only and website:
+    # Tier-1 Website Filtering
+    effective_no_website = no_website_only or (website_filter == "NO_WEBSITE")
+    if effective_no_website and website:
         logger.info(
             f"[{idx}] '{name}' has a website — skipping (Tier-1 no-website filter)."
         )
         _bump(tier1_stats, "HAS_WEBSITE")
+        return None
+
+    if website_filter == "HAS_WEBSITE" and not website:
+        logger.info(
+            f"[{idx}] '{name}' has no website — skipping (Tier-1 has-website filter)."
+        )
+        _bump(tier1_stats, "NO_WEBSITE")
         return None
 
     # --- Tier-2: single CDP round-trip for enrichment (only qualified businesses reach here) ---
@@ -380,6 +390,7 @@ async def collect_business_details_stream(
     settings_cache=None,
     context=None,
     no_website_only: bool = False,
+    website_filter: str = "ALL",
     tier1_stats: Optional[Dict[str, int]] = None,
     extraction_stats: Optional[Dict[str, int]] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
@@ -461,6 +472,7 @@ async def collect_business_details_stream(
                     idx,
                     total_for_scrape,
                     no_website_only=no_website_only,
+                    website_filter=website_filter,
                     tier1_stats=tier1_stats,
                     extraction_stats=extraction_stats,
                 )
