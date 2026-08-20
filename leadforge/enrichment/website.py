@@ -6,7 +6,11 @@ import urllib.parse
 from typing import Dict, Any, List, Set, Optional
 from bs4 import BeautifulSoup
 
-from leadforge.enrichment.base import BaseEnrichmentProvider, EnrichmentResult
+from leadforge.enrichment.base import (
+    BaseEnrichmentProvider,
+    EnrichmentResult,
+    is_non_business_host,
+)
 from leadforge.enrichment.http_fetch import fetch_page
 from leadforge.utils import get_logger
 
@@ -48,6 +52,15 @@ class WebsiteProvider(BaseEnrichmentProvider):
             or ""
         ).strip()
         if not domain:
+            return []
+
+        # A link-aggregator or social profile hosts many businesses; crawling it
+        # yields the platform's own contact address, not this lead's.
+        if is_non_business_host(domain):
+            logger.info(
+                f"[WebsiteProvider] Skipping '{domain}' — a platform/aggregator host, "
+                f"not {business_profile.get('name', 'this business')}'s own site."
+            )
             return []
 
         # Ensure scheme

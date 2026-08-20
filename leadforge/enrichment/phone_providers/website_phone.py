@@ -10,6 +10,7 @@ import urllib.parse
 from typing import Dict, Any, List, Set, Optional
 from bs4 import BeautifulSoup
 
+from leadforge.enrichment.base import is_non_business_host
 from leadforge.enrichment.phone_providers.base import BasePhoneProvider, PhoneResult
 from leadforge.enrichment.http_fetch import fetch_page
 from leadforge.normalizer import canonical_phone, normalize_phone
@@ -62,6 +63,10 @@ class WebsitePhoneProvider(BasePhoneProvider):
             or ""
         ).strip()
         if not domain:
+            return []
+
+        if is_non_business_host(domain):
+            logger.info(f"[WebsitePhoneProvider] Skipping platform/aggregator host: {domain}")
             return []
 
         if not domain.startswith("http://") and not domain.startswith("https://"):

@@ -5,6 +5,35 @@ from dataclasses import dataclass
 from typing import Dict, Any, List, Optional
 
 
+# Domains that host many businesses' pages rather than belonging to one.
+# Crawling these harvests the *platform's* contact details, not the lead's —
+# three businesses whose website_domain was "linktr.ee" all came back with
+# Linktree's own press address.
+NON_BUSINESS_HOST_DOMAINS = {
+    "linktr.ee", "linktree.com", "bit.ly", "tinyurl.com", "rb.gy", "cutt.ly",
+    "instagram.com", "facebook.com", "fb.com", "m.facebook.com", "twitter.com",
+    "x.com", "linkedin.com", "youtube.com", "youtu.be", "wa.me", "t.me",
+    "pinterest.com", "threads.net", "sites.google.com", "business.site",
+    "google.com", "maps.google.com", "g.page", "wixsite.com", "blogspot.com",
+    "wordpress.com", "weebly.com", "justdial.com", "indiamart.com",
+    "tradeindia.com", "exportersindia.com", "sulekha.com",
+}
+
+
+def is_non_business_host(domain: str) -> bool:
+    """True when the domain is a platform/aggregator rather than one business's own site."""
+    host = (domain or "").strip().lower()
+    host = host.split("//")[-1].split("/")[0].split(":")[0].rstrip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    if not host:
+        return False
+    if host in NON_BUSINESS_HOST_DOMAINS:
+        return True
+    # Subdomains of a blocked host (m.facebook.com, foo.wixsite.com).
+    return any(host.endswith("." + blocked) for blocked in NON_BUSINESS_HOST_DOMAINS)
+
+
 @dataclass(frozen=True)
 class EnrichmentResult:
     """Normalized value object produced by enrichment providers."""

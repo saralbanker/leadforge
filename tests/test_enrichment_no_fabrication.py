@@ -268,3 +268,50 @@ def test_no_prior_discovery_still_crawls():
         assert top.email == "fresh@acme.in"
 
     asyncio.run(_test())
+
+
+# --------------------------------------------------------------------------
+# Platform / aggregator hosts
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("domain", [
+    "linktr.ee", "www.linktr.ee", "https://linktr.ee/somebiz",
+    "instagram.com", "m.facebook.com", "foo.wixsite.com", "business.site",
+])
+def test_platform_hosts_are_recognised(domain):
+    from leadforge.enrichment.base import is_non_business_host
+    assert is_non_business_host(domain) is True
+
+
+@pytest.mark.parametrize("domain", [
+    "aavadinstrument.com", "anarrubber.com", "krish-plastic.com", "smtpl.com",
+])
+def test_real_business_domains_are_not_blocked(domain):
+    from leadforge.enrichment.base import is_non_business_host
+    assert is_non_business_host(domain) is False
+
+
+def test_website_provider_skips_aggregator_domains():
+    """Crawling linktr.ee returned Linktree's own press address for 3 businesses."""
+    from leadforge.enrichment.website import WebsiteProvider
+
+    async def _test():
+        results = await WebsiteProvider().enrich(
+            {"name": "Shakti Gold", "website_domain": "linktr.ee"}
+        )
+        assert results == []
+
+    asyncio.run(_test())
+
+
+def test_aggregator_discards_platform_addresses():
+    async def _test():
+        agg = EmailCandidateAggregator(verify_mx=False)
+        top, ranked = await agg.aggregate([
+            _result("press@linktr.ee"),
+            _result("owner@shaktigold.in"),
+        ])
+        assert [c.email for c in ranked] == ["owner@shaktigold.in"]
+        assert top.email == "owner@shaktigold.in"
+
+    asyncio.run(_test())

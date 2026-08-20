@@ -8,7 +8,7 @@ import asyncio
 import re
 import socket
 from typing import List, Dict, Optional
-from leadforge.enrichment.base import EnrichmentResult
+from leadforge.enrichment.base import EnrichmentResult, is_non_business_host
 from leadforge.utils import get_logger
 
 logger = get_logger()
@@ -128,6 +128,11 @@ class EmailCandidateAggregator:
             # 3. Generic ignore-list & domain blacklist check
             domain = email_clean.split("@")[-1]
             if email_clean in GENERIC_EMAILS_IGNORE or domain in IGNORED_EMAIL_DOMAINS:
+                continue
+
+            # An address at a platform/aggregator domain belongs to that platform.
+            if is_non_business_host(domain):
+                logger.debug(f"[Aggregator] Discarding platform address {email_clean}")
                 continue
 
             # Deduplicate by email address, keeping the highest confidence score result
