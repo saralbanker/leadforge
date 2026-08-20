@@ -12,17 +12,18 @@ import leadforge.database
 temp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 temp_db_path = Path(temp_db.name)
 temp_db.close()
-leadforge.database.DB_PATH = temp_db_path
-
 from leadforge.database import initialize_database, get_db_connection  # noqa: E402
 from leadforge.outreach.deliverer import SMTPEmailDeliverer  # noqa: E402
 
 
 @pytest.fixture(scope="module", autouse=True)
 def setup_and_teardown():
+    mp = pytest.MonkeyPatch()
+    mp.setattr(leadforge.database, "DB_PATH", temp_db_path)
     # Bootstrap database
     initialize_database()
     yield
+    mp.undo()
     # Cleanup temp db
     if temp_db_path.exists():
         try:
@@ -34,7 +35,15 @@ def setup_and_teardown():
 @pytest.fixture
 def smtp_env():
     """Fixture to temporarily mock SMTP config flags."""
-    with patch("leadforge.outreach.deliverer.SMTP_CONFIGURED", True), \
+    with patch.dict(os.environ, {
+        "SMTP_HOST": "smtp.example.com",
+        "SMTP_PORT": "587",
+        "SMTP_USERNAME": "testuser",
+        "SMTP_PASSWORD": "testpass",
+        "SMTP_FROM_EMAIL": "outreach@orvion.com",
+        "SMTP_FROM_NAME": "Orvion",
+        "SMTP_USE_TLS": "True",
+    }), patch("leadforge.outreach.deliverer.SMTP_CONFIGURED", True), \
          patch("leadforge.outreach.deliverer.SMTP_HOST", "smtp.example.com"), \
          patch("leadforge.outreach.deliverer.SMTP_PORT", 587), \
          patch("leadforge.outreach.deliverer.SMTP_USERNAME", "testuser"), \

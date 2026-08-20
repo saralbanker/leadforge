@@ -10,8 +10,6 @@ import leadforge.database
 temp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 temp_db_path = Path(temp_db.name)
 temp_db.close()
-leadforge.database.DB_PATH = temp_db_path
-
 from leadforge.database import initialize_database, get_db_connection  # noqa: E402
 from leadforge.outreach.discovery import (  # noqa: E402
     extract_emails_from_text,
@@ -22,9 +20,12 @@ from leadforge.outreach.discovery import (  # noqa: E402
 
 @pytest.fixture(scope="module", autouse=True)
 def setup_and_teardown():
+    mp = pytest.MonkeyPatch()
+    mp.setattr(leadforge.database, "DB_PATH", temp_db_path)
     # Bootstrap database
     initialize_database()
     yield
+    mp.undo()
     # Cleanup temp db
     if temp_db_path.exists():
         try:

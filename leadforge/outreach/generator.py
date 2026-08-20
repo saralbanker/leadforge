@@ -3,33 +3,29 @@ import re
 import time
 import requests
 from typing import Dict, Any, Optional, List
-from leadforge.config import OLLAMA_API_URL
+from leadforge.config import OLLAMA_API_URL, DEFAULT_LLM_MODEL, DEFAULT_LLM_MAX_TOKENS, DEFAULT_LLM_TEMPERATURE
 from leadforge.utils import get_logger
 
 logger = get_logger()
 
-DEFAULT_SYSTEM_PROMPT = """You are an outreach copywriter. Write a single, personalized observation sentence about a local business based on their details. This sentence will be the first line of an email.
+DEFAULT_SYSTEM_PROMPT = """You are an expert B2B outreach copywriter specialized in industrial, manufacturing, and local business growth. Write a concise, highly tailored observation hook for the target business based on their gathered operational details.
 
 Writing Rules:
-1. Write like a real person sending a quick email from their phone. Keep it under 18 words.
-2. Start immediately with a specific detail (e.g. "I noticed your profile has 48 reviews but no link to a website").
-3. Do NOT use introductory greeting fluff or say "hope you are well".
-4. Return ONLY a JSON payload conforming to the format below. Do not output any other conversational text or surrounding explanations.
-
-JSON Format:
-{
-  "observation_hook": "Your single observation sentence goes here."
-}
-"""
+1. Write like a real business development professional sending a quick, relevant inquiry.
+2. Ground the observation specifically in their real industry, city/industrial zone, and digital infrastructure (e.g. absence of digital spec catalog or online procurement).
+3. Do NOT use generic pleasantries, greetings, or "hope you are well". Keep it under 25 words.
+4. Output strictly raw JSON: {"observation_hook": "Your single observation sentence here."}"""
 
 DEFAULT_USER_PROMPT_TEMPLATE = """Business Name: {business_name}
-Google Review Count: {review_count}
-Google Rating: {rating}
+Category: {category}
 City: {city}
-Scraped Website Snippet: {scraped_text}
+Area / Industrial Zone: {area}
+Has Website: {has_website}
+Website Domain / Scraped Snippet: {scraped_text}
+Google Rating: {rating}
+Google Review Count: {review_count}
 
-Output the single observation hook in raw JSON.
-"""
+Output the single observation hook in raw JSON."""
 
 
 def sanitize_scraped_text(text: str) -> str:
@@ -96,8 +92,8 @@ class OllamaHookGenerator:
     def model_name(self) -> str:
         settings = self._get_settings()
         if settings:
-            return settings.get_str("llm.model_name", "llama3.2:3b")
-        return "llama3.2:3b"
+            return settings.get_str("llm.model_name", DEFAULT_LLM_MODEL)
+        return DEFAULT_LLM_MODEL
 
     @property
     def system_prompt(self) -> str:
@@ -117,15 +113,22 @@ class OllamaHookGenerator:
     def temperature(self) -> float:
         settings = self._get_settings()
         if settings:
-            return settings.get_float("llm.temperature", 0.2)
-        return 0.2
+            return settings.get_float("llm.temperature", DEFAULT_LLM_TEMPERATURE)
+        return DEFAULT_LLM_TEMPERATURE
 
     @property
     def max_tokens(self) -> int:
         settings = self._get_settings()
         if settings:
-            return settings.get_int("llm.max_tokens", 35)
-        return 35
+            return settings.get_int("llm.max_tokens", DEFAULT_LLM_MAX_TOKENS)
+        return DEFAULT_LLM_MAX_TOKENS
+
+    @property
+    def keep_alive(self) -> str:
+        settings = self._get_settings()
+        if settings:
+            return settings.get_str("llm.keep_alive", "0s")
+        return "0s"
 
     @property
     def is_enabled(self) -> bool:
@@ -133,6 +136,36 @@ class OllamaHookGenerator:
         if settings:
             return settings.get_str("llm.enabled", "true").lower() in ("true", "1", "yes")
         return True
+
+    @staticmethod
+    def get_approved_exemplars(category: str = "", limit: int = 2) -> List[Dict[str, str]]:
+        """Retrieves recently accepted/approved email drafts to use as in-context learning references."""
+        try:
+            from leadforge.database import get_db_connection
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            query = """
+                SELECT ed.subject, ed.body, b.name as business_name, bt.name as category, a.city, a.area
+                FROM email_drafts ed
+                JOIN opportunities o ON ed.opportunity_id = o.id
+                JOIN businesses b ON o.business_id = b.id
+                LEFT JOIN business_types bt ON b.business_type_id = bt.id
+                LEFT JOIN addresses a ON b.id = a.business_id
+                WHERE ed.status IN ('APPROVED', 'SENT')
+            """
+            params = []
+            if category:
+                query += " AND (bt.name LIKE ? OR b.name LIKE ?)"
+                params.extend([f"%{category}%", f"%{category}%"])
+            query += " ORDER BY ed.updated_at DESC LIMIT ?"
+            params.append(limit)
+
+            cursor.execute(query, tuple(params))
+            rows = cursor.fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
 
     def generate_hook(
         self,
@@ -183,12 +216,27 @@ class OllamaHookGenerator:
             for k, v in prompt_vars.items():
                 prompt_content = prompt_content.replace(f"{{{k}}}", str(v))
 
+        # Retrieve user-approved exemplars to guide the model with accepted reference patterns
+        exemplars = self.get_approved_exemplars(category=category, limit=2)
+        if not exemplars and category:
+            exemplars = self.get_approved_exemplars(category="", limit=2)
+
+        sys_prompt = self.system_prompt
+        if exemplars:
+            sys_prompt += "\n\nUser-Approved Reference Examples (Follow this preferred tone and structure):\n"
+            for i, ex in enumerate(exemplars, 1):
+                clean_ref = ex.get("body", "").split("\n\n---")[0].strip().replace("\n", " ")
+                if len(clean_ref) > 200:
+                    clean_ref = clean_ref[:197] + "..."
+                sys_prompt += f"Example {i} ({ex.get('business_name', 'Business')} - {ex.get('category', 'Manufacturing')}): \"{clean_ref}\"\n"
+
         payload = {
             "model": self.model_name,
             "prompt": prompt_content,
-            "system": self.system_prompt,
+            "system": sys_prompt,
             "format": "json",
             "stream": False,
+            "keep_alive": self.keep_alive,
             "options": {
                 "temperature": self.temperature,
                 "num_predict": self.max_tokens,
@@ -196,11 +244,11 @@ class OllamaHookGenerator:
         }
 
         try:
-            logger.info(f"Requesting Ollama hook generation for business: '{business_name}' using model '{self.model_name}'")
+            logger.info(f"Requesting Ollama hook generation for business: '{business_name}' using model '{self.model_name}' (keep_alive: {self.keep_alive})")
             response = requests.post(
                 f"{self.api_url}/api/generate",
                 json=payload,
-                timeout=15,  # Limit timeout for local CPU execution
+                timeout=300,  # 5 minutes: a long custom system prompt can push CPU-only prompt-eval alone past 2-3 minutes
             )
 
             if response.status_code != 200:
@@ -231,16 +279,24 @@ class OllamaHookGenerator:
                         or parsed.get("result")
                         or ""
                     ).strip()
+                    if not hook and parsed.get("body"):
+                        # Some system prompts (e.g. full-email schemas) return subject/body
+                        # instead of a standalone hook fragment. Use the opening of the body
+                        # as the observation hook rather than discarding the generation.
+                        body_text = str(parsed["body"]).strip()
+                        first_sentence = re.split(r"(?<=[.!?])\s+", body_text, maxsplit=1)[0]
+                        hook = first_sentence.strip()
+                    if not hook:
+                        # Last resort: personalization_basis is a short internal label, not
+                        # reader-facing prose, but it beats discarding the generation entirely.
+                        hook = str(parsed.get("personalization_basis") or "").strip()
                     if not hook and len(parsed) == 1:
                         # Grab whatever single value is in the dict
                         hook = str(list(parsed.values())[0]).strip()
                 elif isinstance(parsed, str):
                     hook = parsed.strip()
             except Exception:
-                # If model returned plain text instead of JSON
-                clean_raw = raw_response.strip().strip('"').strip("'")
-                if clean_raw and not clean_raw.startswith("{") and len(clean_raw) < 300:
-                    hook = clean_raw
+                hook = ""
 
             if not hook:
                 logger.warning("Parsed Ollama response has empty hook. Using fallback.")
@@ -303,7 +359,7 @@ class OllamaHookGenerator:
     ) -> Dict[str, Any]:
         """Runs a test generation against the local LM and returns timing and generated output."""
         url = (api_url or OLLAMA_API_URL).rstrip("/")
-        model = model_name or "llama3.2:3b"
+        model = model_name or "llama3.1:8b"
         sys_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
         user_prompt = prompt or "Business Name: Shree Ram Engineering Works\nCategory: CNC Machining\nCity: Ahmedabad\nOutput raw JSON."
 
@@ -313,6 +369,7 @@ class OllamaHookGenerator:
             "system": sys_prompt,
             "format": "json",
             "stream": False,
+            "keep_alive": "0s",
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
@@ -321,7 +378,7 @@ class OllamaHookGenerator:
 
         start = time.time()
         try:
-            resp = requests.post(f"{url}/api/generate", json=payload, timeout=25.0)
+            resp = requests.post(f"{url}/api/generate", json=payload, timeout=300.0)
             latency_ms = round((time.time() - start) * 1000, 1)
             if resp.status_code == 200:
                 data = resp.json()

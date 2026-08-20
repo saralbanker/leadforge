@@ -4,10 +4,10 @@ import asyncio
 import re
 import urllib.parse
 from typing import Dict, Any, List, Set, Optional
-import httpx
 from bs4 import BeautifulSoup
 
 from leadforge.enrichment.base import BaseEnrichmentProvider, EnrichmentResult
+from leadforge.enrichment.http_fetch import fetch_page
 from leadforge.utils import get_logger
 
 logger = get_logger()
@@ -63,65 +63,49 @@ class WebsiteProvider(BaseEnrichmentProvider):
             logger.warning(f"[WebsiteProvider] Blocked local/private target: {host}")
             return []
 
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            )
-        }
-
         results: List[EnrichmentResult] = []
         visited_urls: Set[str] = set()
 
-        async with httpx.AsyncClient(
-            headers=headers,
-            timeout=self._timeout,
-            follow_redirects=True,
-            verify=False,
-        ) as client:
-            # 1. Crawl Homepage
-            homepage_html, subpage_links = await self._fetch_and_parse(
-                client, target_url, visited_urls
-            )
-            if homepage_html:
-                results.extend(
-                    self._extract_emails_from_html(
-                        homepage_html, target_url, context="homepage"
-                    )
+        # 1. Crawl Homepage
+        homepage_html, subpage_links = await self._fetch_and_parse(target_url, visited_urls)
+        if homepage_html:
+            results.extend(
+                self._extract_emails_from_html(
+                    homepage_html, target_url, context="homepage"
                 )
+            )
 
-            # 2. Crawl shallow subpages concurrently (depth-1: contact/about links)
-            tasks = []
-            for sub_link in subpage_links[: self._max_subpages]:
-                tasks.append(self._fetch_and_parse(client, sub_link, visited_urls))
+        # 2. Crawl shallow subpages concurrently (depth-1: contact/about links)
+        tasks = []
+        for sub_link in subpage_links[: self._max_subpages]:
+            tasks.append(self._fetch_and_parse(sub_link, visited_urls))
 
-            if tasks:
-                sub_results = await asyncio.gather(*tasks, return_exceptions=True)
-                for res in sub_results:
-                    if isinstance(res, tuple):
-                        sub_html, _ = res
-                        if sub_html:
-                            results.extend(
-                                self._extract_emails_from_html(
-                                    sub_html, sub_link, context="contact_subpage"
-                                )
+        if tasks:
+            sub_results = await asyncio.gather(*tasks, return_exceptions=True)
+            for res in sub_results:
+                if isinstance(res, tuple):
+                    sub_html, _ = res
+                    if sub_html:
+                        results.extend(
+                            self._extract_emails_from_html(
+                                sub_html, sub_link, context="contact_subpage"
                             )
+                        )
 
         return results
 
     async def _fetch_and_parse(
-        self, client: httpx.AsyncClient, url: str, visited: Set[str]
+        self, url: str, visited: Set[str]
     ) -> tuple[Optional[str], List[str]]:
         if url in visited:
             return None, []
         visited.add(url)
 
         try:
-            resp = await client.get(url)
-            if resp.status_code != 200:
+            html = await fetch_page(url, self._timeout)
+            if not html:
                 return None, []
 
-            html = resp.text
             soup = BeautifulSoup(html, "html.parser")
 
             subpage_links: List[str] = []

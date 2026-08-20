@@ -11,8 +11,6 @@ import leadforge.database
 temp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 temp_db_path = Path(temp_db.name)
 temp_db.close()
-leadforge.database.DB_PATH = temp_db_path
-
 from leadforge.database import initialize_database, get_db_connection  # noqa: E402
 from leadforge.server import app  # noqa: E402
 
@@ -21,9 +19,12 @@ client = TestClient(app)
 
 @pytest.fixture(scope="module", autouse=True)
 def setup_and_teardown():
+    mp = pytest.MonkeyPatch()
+    mp.setattr(leadforge.database, "DB_PATH", temp_db_path)
     # Bootstrap database
     initialize_database()
     yield
+    mp.undo()
     # Cleanup temp db
     if temp_db_path.exists():
         try:
@@ -43,11 +44,13 @@ def test_list_campaigns():
     assert "name" in data[0]
 
 
+@patch("leadforge.server.phone_enrichment_orchestrator.enrich_phone")
 @patch("leadforge.outreach.discovery.WebsiteAuditor.audit_website")
 @patch("leadforge.outreach.generator.OllamaHookGenerator.generate_hook")
-def test_drafts_generation_and_approval_workflow(mock_hook: MagicMock, mock_audit: MagicMock):
+def test_drafts_generation_and_approval_workflow(mock_hook: MagicMock, mock_audit: MagicMock, mock_phone: MagicMock):
     """Verify generate draft, approve, reject, list, and deliver loop."""
     # 1. Setup mock responses
+    mock_phone.return_value = (None, None, None, [])
     mock_audit.return_value = {
         "has_website": True,
         "ssl_valid": True,
@@ -136,6 +139,69 @@ def test_drafts_generation_and_approval_workflow(mock_hook: MagicMock, mock_audi
     response = client.get("/api/outreach/drafts")
     assert response.status_code == 200
     assert response.json()[0]["status"] == "REJECTED"
+
+
+@patch("leadforge.server.phone_enrichment_orchestrator.enrich_phone")
+@patch("leadforge.outreach.discovery.WebsiteAuditor.audit_website")
+@patch("leadforge.outreach.generator.OllamaHookGenerator.generate_hook")
+def test_generate_draft_fills_missing_phone(mock_hook: MagicMock, mock_audit: MagicMock, mock_phone: MagicMock):
+    """A business with no display_phone should get one from phone enrichment when a draft is generated."""
+    mock_audit.return_value = {
+        "has_website": True,
+        "ssl_valid": True,
+        "load_time_seconds": 1.0,
+        "viewport_mobile": True,
+        "cms": "Custom",
+        "has_booking": False,
+        "discovered_emails": ["owner@phonelessbiz.com"],
+        "cleaned_text": "Sample crawled homepage text.",
+    }
+    mock_hook.return_value = "Noticed your listing."
+    mock_phone.return_value = ("+919876543210", "indiamart", "+919876543210", [{"phone": "+919876543210"}])
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    business_id = "01907de3-bc42-7c89-8d76-5a507db4fa11"
+    opp_id = "01907de3-bc42-7c89-8d76-5a507db4fa22"
+    bt_id = "01907de3-bc42-7c89-8d76-5a507db4fa33"
+
+    cursor.execute("INSERT OR IGNORE INTO business_types (id, name) VALUES (?, ?);", (bt_id, "Phone Test Category"))
+    cursor.execute("SELECT id FROM business_types WHERE name = 'Phone Test Category'")
+    bt_id = cursor.fetchone()[0]
+    cursor.execute(
+        """
+        INSERT OR IGNORE INTO businesses (id, normalized_name, name, website_domain, business_type_id)
+        VALUES (?, ?, ?, ?, ?);
+        """,
+        (business_id, "phoneless biz", "Phoneless Biz", "phonelessbiz.com", bt_id),
+    )
+    cursor.execute(
+        """
+        INSERT OR IGNORE INTO opportunities (id, business_id, title, pipeline_stage, score)
+        VALUES (?, ?, 'Phone Enrichment Opportunity', 'PROSPECTING', 70);
+        """,
+        (opp_id, business_id),
+    )
+    conn.commit()
+    conn.close()
+
+    response = client.post(
+        "/api/outreach/drafts/generate",
+        json={"opportunity_id": opp_id, "force_regenerate": False},
+    )
+    assert response.status_code == 200
+    draft = response.json()
+    assert draft["recipient_phone"] == "+919876543210"
+    mock_phone.assert_called_once()
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT display_phone, phone_source FROM businesses WHERE id = ?", (business_id,))
+    row = cursor.fetchone()
+    conn.close()
+    assert row["display_phone"] == "+919876543210"
+    assert row["phone_source"] == "indiamart"
 
 
 @patch("leadforge.outreach.deliverer.SMTPEmailDeliverer.send_approved_drafts")

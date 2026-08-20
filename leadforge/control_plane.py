@@ -35,6 +35,13 @@ from leadforge.normalizer import (
 )
 from leadforge.sil.search_plan_generator import SearchPlanGenerator, SearchPlan
 from leadforge.campaign_intelligence import CampaignIntelligence
+from leadforge.enrichment.phone_orchestrator import PhoneEnrichmentOrchestrator
+from leadforge.taxonomy import get_keywords_for_subcategory
+from leadforge.search_directory import (
+    discover_indiamart_businesses_stream,
+    discover_justdial_businesses_stream,
+    discover_tradeindia_businesses_stream,
+)
 from leadforge.utils import extract_place_id, get_logger
 
 logger = get_logger()
@@ -199,13 +206,13 @@ class SearchOrchestrator:
         website_filter: str = "ALL",
         search_id: Optional[str] = None,
         campaign_name: Optional[str] = None,
+        platforms: Optional[List[str]] = None,
+        sub_category: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Executes the qualified lead pipeline as a streaming producer-consumer.
 
-        Phase 3: One Chromium instance, one BrowserContext, two Pages (discovery +
-        collection).  Browser is created once here and passed into both generators;
-        each generator creates and closes its own Page, and the browser is closed
-        in the outer finally block after both generators have exited.
+        Supports multi-platform discovery (Google Maps, IndiaMart, Justdial, TradeIndia)
+        with automatic rollover and multi-provider phone enrichment.
         """
         planner = SearchPlanner()
         budget = planner.plan(limit)
@@ -213,27 +220,58 @@ class SearchOrchestrator:
         self.state = state
         self.discovered_links = state.discovered_links  # live reference
 
+        effective_category = sub_category.strip() if sub_category and sub_category.strip() else category
+        active_platforms = [p.lower().strip() for p in (platforms or ["google_maps"])]
+        if not active_platforms:
+            active_platforms = ["google_maps"]
+
         logger.info("⚡ Search Orchestrator: Starting qualified-lead campaign.")
         logger.info(f"Target limit: {limit} qualified leads | Search budget: {budget}")
+        logger.info(f"Category: '{effective_category}' (Sector: '{category}') | Platforms: {active_platforms}")
 
-        # --- SIL: generate deterministic search plan ---
+        # --- SIL: generate deterministic search plan with taxonomy keyword expansion ---
         _sil = SearchPlanGenerator()
-        search_plans: list[SearchPlan] = _sil.generate(
-            city, category, target_qualified_leads=limit
-        )
+        search_plans: list[SearchPlan] = []
+
+        keywords_to_search: List[str] = []
+        if sub_category and sub_category.strip():
+            keywords_to_search = get_keywords_for_subcategory(category, sub_category.strip())
+
+        if keywords_to_search:
+            for kw in keywords_to_search[:5]:
+                kw_plans = _sil.generate(city, kw, target_qualified_leads=limit)
+                search_plans.extend(kw_plans)
+
+        if not search_plans:
+            search_plans = _sil.generate(
+                city, effective_category, target_qualified_leads=limit
+            )
+
         if not search_plans:
             search_plans = [
                 SearchPlan(
-                    search_query=f"{category} in {city}",
-                    canonical_category=category,
+                    search_query=f"{effective_category} in {city}",
+                    canonical_category=effective_category,
                     geographic_partition=city,
                     original_city=city,
                     priority_score=1.0,
                     execution_order=1,
                 )
             ]
+
+        # Deduplicate search plans by normalized query
+        seen_q = set()
+        deduped_plans = []
+        for plan in search_plans:
+            q_key = plan["search_query"].strip().lower()
+            if q_key not in seen_q:
+                seen_q.add(q_key)
+                plan["execution_order"] = len(deduped_plans) + 1
+                deduped_plans.append(plan)
+        search_plans = deduped_plans
+
         logger.info(
-            f"[SIL] {len(search_plans)} search plan(s) for '{category}' in '{city}'"
+            f"[SIL] {len(search_plans)} search plan(s) for '{effective_category}' in '{city}'"
         )
 
         # --- Phase 5: Campaign Intelligence observer (passive, no runtime effect) ---
@@ -278,18 +316,12 @@ class SearchOrchestrator:
         _producer_cancelled = False
 
         async def _producer() -> None:
-            """Execute each SearchPlan sequentially, feeding URLs into url_queue.
-
-            SIL owns query generation; this producer owns sequential execution,
-            URL-level deduplication, and sentinel delivery.  All other pipeline
-            contracts (consumer, validator, repos) are unchanged.
-            """
+            """Execute discovery across enabled platforms sequentially with rollover."""
             nonlocal discovery_failed, pre_filter_skipped, _producer_cancelled
             plans_attempted = 0
             plans_failed = 0
             try:
-                for plan in search_plans:
-                    # Honour consumer-signalled termination before each plan.
+                for target_platform in active_platforms:
                     if (
                         state.qualified_count >= limit
                         or state.budget_consumed >= state.search_budget
@@ -297,54 +329,106 @@ class SearchOrchestrator:
                     ):
                         break
 
-                    plans_attempted += 1
-                    plan_idx = plan["execution_order"] - 1  # 0-based for CI
-                    partition = plan["geographic_partition"]
-                    # Reconstruct the variant term: search_query = "{variant} in {partition}"
-                    variant = plan["search_query"].removesuffix(f" in {partition}")
-                    remaining = max(1, state.search_budget - len(state.discovered_links))
+                    logger.info(f"⚡ Discovery search executing on platform: '{target_platform}'")
 
-                    logger.info(
-                        f"[SIL] Plan {plan['execution_order']}/{len(search_plans)}: "
-                        f"'{plan['search_query']}' (budget remaining: {remaining})"
-                    )
+                    if target_platform == "google_maps":
+                        for plan in search_plans:
+                            if (
+                                state.qualified_count >= limit
+                                or state.budget_consumed >= state.search_budget
+                                or state.search_space_exhausted
+                            ):
+                                break
 
-                    ci.mark_discovery_start(plan_idx)
-                    try:
-                        async for url in discover_business_links_stream(
-                            partition,
-                            variant,
-                            limit=remaining,
-                            settings_cache=self._settings_cache,
-                            context=shared_context,
-                        ):
-                            state.discovered_links.append(url)
-                            ci.record_url_discovered(plan_idx)
-                            early_pid = _extract_place_id(url)
-                            if self.lead_repo.check_duplicate(early_pid or "", "", ""):
-                                state.record_duplicate()
-                                ci.record_discovery_duplicate(plan_idx)
-                                pre_filter_skipped += 1
-                                continue
-                            ci.url_plan_map[url] = plan_idx
-                            await url_queue.put(url)
-                    except RuntimeError as exc:
-                        if "DISCOVERY_FAILED" in str(exc):
-                            logger.warning(
-                                f"[SIL] Plan {plan['execution_order']} discovery failed: "
-                                f"'{plan['search_query']}' — continuing to next plan."
+                            plans_attempted += 1
+                            plan_idx = plan["execution_order"] - 1
+                            partition = plan["geographic_partition"]
+                            variant = plan["search_query"].removesuffix(f" in {partition}")
+                            remaining = max(1, state.search_budget - len(state.discovered_links))
+
+                            logger.info(
+                                f"[SIL] Plan {plan['execution_order']}/{len(search_plans)}: "
+                                f"'{plan['search_query']}' (budget remaining: {remaining})"
                             )
-                            plans_failed += 1
-                    finally:
-                        ci.mark_discovery_end(plan_idx)
-                    # asyncio.CancelledError propagates to the outer except below.
 
-                    logger.info(
-                        f"[SIL] Plan {plan['execution_order']} complete: "
-                        f"'{plan['search_query']}'"
-                    )
+                            ci.mark_discovery_start(plan_idx)
+                            try:
+                                async for url in discover_business_links_stream(
+                                    partition,
+                                    variant,
+                                    limit=remaining,
+                                    settings_cache=self._settings_cache,
+                                    context=shared_context,
+                                ):
+                                    state.discovered_links.append(url)
+                                    ci.record_url_discovered(plan_idx)
+                                    early_pid = _extract_place_id(url)
+                                    if self.lead_repo.check_duplicate(early_pid or "", "", ""):
+                                        state.record_duplicate()
+                                        ci.record_discovery_duplicate(plan_idx)
+                                        pre_filter_skipped += 1
+                                        continue
+                                    ci.url_plan_map[url] = plan_idx
+                                    await url_queue.put(url)
+                            except RuntimeError as exc:
+                                if "DISCOVERY_FAILED" in str(exc):
+                                    logger.warning(
+                                        f"[SIL] Plan {plan['execution_order']} discovery failed: "
+                                        f"'{plan['search_query']}'"
+                                    )
+                                    plans_failed += 1
+                            finally:
+                                ci.mark_discovery_end(plan_idx)
 
-                if plans_attempted > 0 and plans_failed == plans_attempted:
+                    elif target_platform == "indiamart":
+                        terms = keywords_to_search[:3] if keywords_to_search else [effective_category]
+                        for term in terms:
+                            if state.qualified_count >= limit or state.budget_consumed >= state.search_budget:
+                                break
+                            remaining = max(1, state.search_budget - len(state.discovered_links))
+                            async for item in discover_indiamart_businesses_stream(city, term, limit=remaining):
+                                if state.qualified_count >= limit or state.budget_consumed >= state.search_budget:
+                                    break
+                                if self.lead_repo.check_duplicate(None, item["name"], item.get("phone")):
+                                    state.record_duplicate()
+                                    pre_filter_skipped += 1
+                                    continue
+                                state.discovered_links.append(item.get("source_url", item["name"]))
+                                await url_queue.put(item)
+
+                    elif target_platform == "justdial":
+                        terms = keywords_to_search[:3] if keywords_to_search else [effective_category]
+                        for term in terms:
+                            if state.qualified_count >= limit or state.budget_consumed >= state.search_budget:
+                                break
+                            remaining = max(1, state.search_budget - len(state.discovered_links))
+                            async for item in discover_justdial_businesses_stream(city, term, limit=remaining):
+                                if state.qualified_count >= limit or state.budget_consumed >= state.search_budget:
+                                    break
+                                if self.lead_repo.check_duplicate(None, item["name"], item.get("phone")):
+                                    state.record_duplicate()
+                                    pre_filter_skipped += 1
+                                    continue
+                                state.discovered_links.append(item.get("source_url", item["name"]))
+                                await url_queue.put(item)
+
+                    elif target_platform == "tradeindia":
+                        terms = keywords_to_search[:3] if keywords_to_search else [effective_category]
+                        for term in terms:
+                            if state.qualified_count >= limit or state.budget_consumed >= state.search_budget:
+                                break
+                            remaining = max(1, state.search_budget - len(state.discovered_links))
+                            async for item in discover_tradeindia_businesses_stream(city, term, limit=remaining):
+                                if state.qualified_count >= limit or state.budget_consumed >= state.search_budget:
+                                    break
+                                if self.lead_repo.check_duplicate(None, item["name"], item.get("phone")):
+                                    state.record_duplicate()
+                                    pre_filter_skipped += 1
+                                    continue
+                                state.discovered_links.append(item.get("source_url", item["name"]))
+                                await url_queue.put(item)
+
+                if plans_attempted > 0 and plans_failed == plans_attempted and len(active_platforms) == 1 and active_platforms[0] == "google_maps":
                     logger.error(
                         "Discovery phase failed — all search plans failed."
                     )
@@ -354,7 +438,6 @@ class SearchOrchestrator:
                 _producer_cancelled = True
             finally:
                 if _producer_cancelled:
-                    # Consumer is gone — force sentinel without blocking.
                     try:
                         url_queue.put_nowait(None)
                     except asyncio.QueueFull:
@@ -365,8 +448,6 @@ class SearchOrchestrator:
                                 break
                         url_queue.put_nowait(None)
                 else:
-                    # Natural completion — wait for space so every queued URL
-                    # is processed before the consumer sees the sentinel.
                     await url_queue.put(None)
 
         async def _url_source():
@@ -382,7 +463,7 @@ class SearchOrchestrator:
         try:
             async for raw_lead in collect_business_details_stream(
                 _url_source(),
-                category,
+                effective_category,
                 city=city,
                 settings_cache=self._settings_cache,
                 context=shared_context,
@@ -415,7 +496,7 @@ class SearchOrchestrator:
                     "address": raw_lead.get("address", ""),
                     "area": raw_lead.get("area", ""),
                     "postal_code": raw_lead.get("postal_code", ""),
-                    "category": normalize_category(raw_lead.get("category", category)),
+                    "category": normalize_category(raw_lead.get("category", effective_category)),
                     "google_primary_category": raw_lead.get(
                         "google_primary_category", ""
                     ),
@@ -430,7 +511,38 @@ class SearchOrchestrator:
                     "email": raw_lead.get("email", ""),
                     "social_links": raw_lead.get("social_links", ""),
                     "city": city,
+                    "primary_platform": raw_lead.get("primary_platform", "google_maps"),
+                    "phone_source": raw_lead.get("primary_platform", "google_maps"),
+                    "phone_candidates": [],
                 }
+
+                # Cross-Platform Phone Enrichment & Candidate Aggregation
+                try:
+                    enricher = PhoneEnrichmentOrchestrator()
+                    p_phone, p_source, c_phone, cand_list = await enricher.enrich_phone(
+                        business_profile={
+                            "name": standard_lead["name"],
+                            "city": city,
+                            "category": standard_lead["category"],
+                            "website": standard_lead["website"],
+                            "website_domain": standard_lead["website_domain"],
+                            "source_url": standard_lead["source_url"],
+                        },
+                        enabled_platforms=active_platforms,
+                        initial_phone=raw_lead.get("phone"),
+                        initial_source=raw_lead.get("primary_platform", "google_maps"),
+                    )
+                    if p_phone:
+                        standard_lead["phone"] = p_phone
+                        standard_lead["phone_source"] = p_source or raw_lead.get("primary_platform", "google_maps")
+                        standard_lead["phone_candidates"] = cand_list
+                    else:
+                        standard_lead["phone_source"] = raw_lead.get("primary_platform", "google_maps")
+                        standard_lead["phone_candidates"] = cand_list or []
+                except Exception as exc:
+                    logger.debug(f"[ControlPlane] Phone enrichment failed for '{standard_lead['name']}': {exc}")
+                    standard_lead["phone_source"] = raw_lead.get("primary_platform", "google_maps")
+                    standard_lead["phone_candidates"] = []
 
                 google_place_id = _extract_place_id(standard_lead["source_url"])
                 standard_lead["google_place_id"] = google_place_id
@@ -477,7 +589,7 @@ class SearchOrchestrator:
                     no_website_only=no_website_only,
                     website_filter=website_filter,
                     target_city=city,
-                    target_category=category,
+                    target_category=effective_category,
                     allow_temporarily_closed=allow_temp_closed,
                     pin_prefix_map=pin_map,
                 )

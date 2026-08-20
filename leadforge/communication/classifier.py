@@ -16,7 +16,30 @@ class LLMReplyClassifier:
     """Classifies prospect email replies into structured intent categories."""
 
     def __init__(self, api_url: Optional[str] = None):
-        self.api_url = api_url or OLLAMA_API_URL
+        self._explicit_api_url = api_url
+
+    def _get_settings(self):
+        try:
+            from leadforge.repositories.settings import SettingsCache
+            return SettingsCache()
+        except Exception:
+            return None
+
+    @property
+    def api_url(self) -> str:
+        if self._explicit_api_url:
+            return self._explicit_api_url
+        settings = self._get_settings()
+        if settings:
+            return settings.get_str("llm.api_url", OLLAMA_API_URL)
+        return OLLAMA_API_URL
+
+    @property
+    def model_name(self) -> str:
+        settings = self._get_settings()
+        if settings:
+            return settings.get_str("llm.model_name", "llama3.1:8b")
+        return "llama3.1:8b"
 
     def classify_reply(self, email_body: str) -> str:
         """Classifies inbound email body into intent category.
@@ -46,7 +69,7 @@ class LLMReplyClassifier:
         )
 
         payload = {
-            "model": "llama3.2:3b",
+            "model": self.model_name,
             "prompt": prompt,
             "system": "You are a B2B sales email intent classifier. Output ONLY JSON.",
             "format": "json",

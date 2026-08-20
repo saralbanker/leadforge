@@ -21,8 +21,8 @@ campaigns:
         - "Pharmaceutical Packaging Machinery"
         - "Industrial Machinery"
     copy_template:
-      subject: "RFQ question re: {business_name}"
-      body_structure: "{observation_hook} When procurement managers search for reliable manufacturing partners in {city}, they look for machine specs and an easy way to submit technical drawings. Without a direct technical catalog, buyers usually default to listed competitors. We build clean, fast-loading digital capability sheets and RFQ portals for industrial units. Do you take drawing submissions mostly over WhatsApp or do you have an online portal?"
+      subject: "no website?"
+      body_structure: "{observation_hook}\n\nRight now, someone searching for a supplier like you in {city} is calling your competitor instead - not because they're better, just because they show up and you don't.\n\nWorth 10 minutes to see exactly what you're losing every month?\n\n- Saral"
 
   - name: "Manufacturing - B2B Dealer & Order Portal"
     target_offer: "Custom B2B Dealer Order Entry & Dispatch Portal"
@@ -37,8 +37,8 @@ campaigns:
         - "Plastic Moulding & Polymer Packaging"
         - "Auto Components & Forging Works"
     copy_template:
-      subject: "dealer orders re: {business_name}"
-      body_structure: "{observation_hook} Taking recurring dealer orders and catalog inquiries manually through phone calls or WhatsApp files creates dispatch delays and manual entry mistakes. We build simple B2B client order portals that let your buyers place batch orders directly into your queue. Do you handle repeat wholesale orders mostly over WhatsApp right now?"
+      subject: "orders by WhatsApp?"
+      body_structure: "{observation_hook}\n\nEvery order written down by hand is a chance for a wrong quantity, a missed order, or a dealer who calls back angry.\n\nWorth 10 minutes to see how much that's actually costing you each month?\n\n- Saral"
 
   - name: "Campaign A (General No Website)"
     target_offer: "Professional Website Design & Speed Optimization"

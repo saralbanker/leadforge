@@ -118,6 +118,21 @@ def test_route_campaign_b_unmatched_category_falls_to_c(temp_campaign_config: Pa
     assert matched["name"] == "Campaign C (Standard)"
 
 
+def test_route_empty_category_does_not_match_category_restricted_campaign(temp_campaign_config: Path):
+    """An empty/unknown category must not satisfy a category-restricted campaign
+    (regression: empty string is a substring of every string, so the fuzzy
+    category match previously treated unknown category as a universal match)."""
+    router = CampaignRouter(config_path=temp_campaign_config)
+    matched = router.route_lead(
+        category="",
+        has_website=True,
+        ssl_valid=True,
+        load_time_seconds=1.2,
+    )
+    assert matched is not None
+    assert matched["name"] == "Campaign C (Standard)"  # falls through, not Campaign B
+
+
 def test_route_no_matches(temp_campaign_config: Path):
     """If no campaign rules match, should return None."""
     router = CampaignRouter(config_path=temp_campaign_config)

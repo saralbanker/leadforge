@@ -33,6 +33,18 @@ def test_quality_spam_and_jargon():
     assert any("AI boilerplate" in issue for issue in result["issues"])
 
 
+def test_quality_word_boundary_no_false_positive():
+    """Regression: "buyers"/"growth" must not trip the "buy"/"grow" spam keywords
+    (substring matching previously flagged legitimate B2B terms as spam)."""
+    body = (
+        "Procurement managers and buyers in Ahmedabad look for a technical catalog. "
+        "Without one, buyers usually default to listed competitors."
+    )
+    result = EmailQualityEngine.score_draft(body)
+    assert not any("Spam indicators" in issue for issue in result["issues"])
+    assert result["quality_score"] == 100
+
+
 def test_quality_links_and_images_banned():
     """Verify that including links or tracking elements reduces the score."""
     body = "Check out our site at https://orvion.com or contact us here."

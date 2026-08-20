@@ -77,6 +77,9 @@ if env_file.exists():
 
 # Ollama API Configuration
 OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434").strip()
+DEFAULT_LLM_MODEL = "llama3.1:8b"
+DEFAULT_LLM_MAX_TOKENS = 150
+DEFAULT_LLM_TEMPERATURE = 0.2
 
 
 def get_smtp_config(settings_cache=None) -> dict:

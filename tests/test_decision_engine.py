@@ -103,7 +103,7 @@ def test_booking_category_decision_routing():
     decision = engine.evaluate_decision(data)
     assert decision.outreach_strategy == "CONVERSION_OPTIMIZATION"
     assert "Booking" in decision.service_name
-    assert "Campaign B (Booking)" in decision.campaign_name
+    assert "Booking" in decision.campaign_name
 
 
 def test_distributor_category_decision_routing():
@@ -118,7 +118,7 @@ def test_distributor_category_decision_routing():
 
     decision = engine.evaluate_decision(data)
     assert "Order" in decision.service_name
-    assert "Campaign B (Order Portal)" in decision.campaign_name
+    assert "Order Portal" in decision.campaign_name
 
 
 def test_unknown_category_fallback():

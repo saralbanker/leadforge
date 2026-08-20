@@ -734,3 +734,47 @@ body {
   from { opacity: 0; transform: translateY(-4px); }
   to   { opacity: 1; transform: translateY(0); }
 }
+
+/* Platform Checkbox Styling */
+.platform-checkbox-group {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+}
+
+.platform-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.platform-checkbox-label:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(20, 184, 166, 0.3);
+}
+
+.platform-checkbox-label.active {
+  background: rgba(20, 184, 166, 0.1);
+  border-color: var(--color-accent);
+  color: var(--text-primary);
+}
+
+.platform-tag {
+  display: inline-block;
+  font-size: 0.68rem;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(20, 184, 166, 0.12);
+  color: var(--color-accent);
+  border: 1px solid rgba(20, 184, 166, 0.25);
+  text-transform: capitalize;
+}

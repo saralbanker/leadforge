@@ -9,8 +9,6 @@ import leadforge.database
 temp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 temp_db_path = Path(temp_db.name)
 temp_db.close()
-leadforge.database.DB_PATH = temp_db_path
-
 from leadforge.database import initialize_database, get_db_connection  # noqa: E402
 from leadforge.normalizer import (  # noqa: E402
     normalize_phone,
@@ -26,8 +24,11 @@ from leadforge.repositories.lead import SQLiteLeadRepository  # noqa: E402
 
 @pytest.fixture(scope="module", autouse=True)
 def setup_and_teardown():
+    mp = pytest.MonkeyPatch()
+    mp.setattr(leadforge.database, "DB_PATH", temp_db_path)
     initialize_database()
     yield
+    mp.undo()
     if temp_db_path.exists():
         try:
             os.remove(temp_db_path)

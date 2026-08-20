@@ -17,6 +17,9 @@ _ALLOWED_MERGE_COLUMNS = frozenset(
         "google_place_id",
         "display_phone",
         "normalized_phone",
+        "phone_candidates",
+        "phone_source",
+        "primary_platform",
         "website_domain",
         "rating",
         "review_count",
@@ -103,6 +106,9 @@ class SQLiteLeadRepository(LeadRepositoryInterface):
                     b.name,
                     COALESCE(bt.name, '')          AS category,
                     COALESCE(b.display_phone, '')  AS phone,
+                    COALESCE(b.phone_source, '')   AS phone_source,
+                    b.phone_candidates,
+                    COALESCE(b.primary_platform, '') AS primary_platform,
                     COALESCE(dp.website_url, '')   AS website,
                     COALESCE(a.address_line, '')   AS address,
                     COALESCE(a.area, '')           AS area,
@@ -149,12 +155,23 @@ class SQLiteLeadRepository(LeadRepositoryInterface):
                     except Exception:
                         disc_date = row["discovery_date"]
 
+                # Parse phone candidates if JSON string
+                cand_list = []
+                if row["phone_candidates"]:
+                    try:
+                        cand_list = json.loads(row["phone_candidates"]) if isinstance(row["phone_candidates"], str) else row["phone_candidates"]
+                    except Exception:
+                        pass
+
                 leads.append(
                     {
                         "business_id": row["business_id"],
                         "name": row["name"],
                         "category": row["category"],
                         "phone": row["phone"],
+                        "phone_source": row["phone_source"],
+                        "phone_candidates": cand_list,
+                        "primary_platform": row["primary_platform"],
                         "website": row["website"],
                         "address": row["address"],
                         "area": row["area"],
@@ -215,16 +232,24 @@ class SQLiteLeadRepository(LeadRepositoryInterface):
             )
 
             norm_phone = canonical_phone(lead_data.get("phone", ""))
+            phone_cand = lead_data.get("phone_candidates")
+            phone_cand_json = (
+                json.dumps(phone_cand)
+                if isinstance(phone_cand, (list, dict))
+                else (phone_cand or None)
+            )
+            phone_source = lead_data.get("phone_source") or "google_maps"
+            primary_platform = lead_data.get("primary_platform") or "google_maps"
 
             cursor.execute(
                 """
                 INSERT INTO businesses (
                     id, google_place_id, website_domain, normalized_name, name,
-                    display_phone, normalized_phone, business_type_id,
+                    display_phone, normalized_phone, phone_candidates, phone_source, primary_platform, business_type_id,
                     rating, review_count, business_status, opening_hours, categories,
                     last_scraped_at, first_discovered_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     business_id,
@@ -234,6 +259,9 @@ class SQLiteLeadRepository(LeadRepositoryInterface):
                     lead_data.get("name"),
                     lead_data.get("phone"),
                     norm_phone or None,
+                    phone_cand_json,
+                    phone_source,
+                    primary_platform,
                     business_type_id,
                     lead_data.get("rating"),
                     lead_data.get("review_count"),
@@ -709,7 +737,7 @@ class SQLiteLeadRepository(LeadRepositoryInterface):
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT id, google_place_id, name, display_phone, website_domain, rating, review_count, business_status, opening_hours, categories
+                SELECT id, google_place_id, name, display_phone, phone_source, phone_candidates, primary_platform, website_domain, rating, review_count, business_status, opening_hours, categories
                 FROM businesses WHERE id = ?
             """,
                 (business_id,),

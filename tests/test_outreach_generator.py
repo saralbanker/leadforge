@@ -33,9 +33,9 @@ def test_generate_hook_success(mock_post: MagicMock, generator: OllamaHookGenera
     
     # Assert correct parameters were sent
     called_args, called_kwargs = mock_post.call_args
-    assert called_kwargs["json"]["model"] == "llama3.2:3b"
+    assert called_kwargs["json"]["model"] == "llama3.1:8b"
     assert called_kwargs["json"]["format"] == "json"
-    assert called_kwargs["json"]["options"]["num_predict"] == 35
+    assert called_kwargs["json"]["options"]["num_predict"] == 150
 
 
 @patch("requests.post")

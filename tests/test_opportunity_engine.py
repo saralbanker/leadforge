@@ -38,8 +38,6 @@ import leadforge.database
 _temp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 _temp_db_path = Path(_temp_db.name)
 _temp_db.close()
-leadforge.database.DB_PATH = _temp_db_path
-
 from leadforge.database import initialize_database, get_db_connection  # noqa: E402
 from leadforge.category_mapper import CategoryServiceMapper  # noqa: E402
 from leadforge.opportunity_engine import (  # noqa: E402
@@ -54,8 +52,11 @@ from leadforge.repositories.settings import SQLiteSettingsRepository  # noqa: E4
 
 @pytest.fixture(scope="module", autouse=True)
 def db_setup():
+    mp = pytest.MonkeyPatch()
+    mp.setattr(leadforge.database, "DB_PATH", _temp_db_path)
     initialize_database()
     yield
+    mp.undo()
     if _temp_db_path.exists():
         try:
             os.remove(_temp_db_path)

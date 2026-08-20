@@ -97,4 +97,30 @@ class BusinessMerger:
             "categories", existing.get("categories"), incoming.get("categories")
         )
 
+        # 9. Phone candidates & source — merge and update
+        incoming_cand = incoming.get("phone_candidates")
+        if incoming_cand:
+            existing_cand_raw = existing.get("phone_candidates") or "[]"
+            try:
+                import json
+                existing_list = json.loads(existing_cand_raw) if isinstance(existing_cand_raw, str) else list(existing_cand_raw)
+                incoming_list = json.loads(incoming_cand) if isinstance(incoming_cand, str) else list(incoming_cand)
+                
+                # Combine unique by canonical or phone
+                seen_canons = {c.get("canonical") or c.get("phone") for c in existing_list if isinstance(c, dict)}
+                for inc_item in incoming_list:
+                    key = (inc_item.get("canonical") or inc_item.get("phone")) if isinstance(inc_item, dict) else None
+                    if key and key not in seen_canons:
+                        existing_list.append(inc_item)
+                        seen_canons.add(key)
+                updates["phone_candidates"] = json.dumps(existing_list)
+            except Exception:
+                updates["phone_candidates"] = json.dumps(incoming_cand) if not isinstance(incoming_cand, str) else incoming_cand
+
+        if incoming.get("phone_source") and incoming.get("phone_source") != existing.get("phone_source"):
+            updates["phone_source"] = incoming.get("phone_source")
+
+        if incoming.get("primary_platform") and incoming.get("primary_platform") != existing.get("primary_platform"):
+            updates["primary_platform"] = incoming.get("primary_platform")
+
         return updates, conflicts

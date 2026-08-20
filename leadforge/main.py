@@ -25,6 +25,8 @@ async def run_pipeline(
     output_file: str = None,
     no_website_only: bool = False,
     website_filter: str = "ALL",
+    platforms: Optional[list] = None,
+    sub_category: Optional[str] = None,
 ) -> dict:
     """Main lead generation pipeline with SQLite persistence."""
     # 1. Initialize database & run migrations on startup
@@ -41,10 +43,12 @@ async def run_pipeline(
     start_time = time.time()
     started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
+    effective_cat = sub_category if sub_category else category
+
     # Construct safe output filename — unique per execution via campaign start timestamp.
     if not output_file:
         safe_city = "".join([c if c.isalnum() else "_" for c in city])
-        safe_category = "".join([c if c.isalnum() else "_" for c in category])
+        safe_category = "".join([c if c.isalnum() else "_" for c in effective_cat])
         ts = started_at[:19].replace("-", "").replace("T", "_").replace(":", "")
         output_file = f"{safe_city}_{safe_category}_{ts}.xlsx"
 
@@ -52,7 +56,9 @@ async def run_pipeline(
     logger.info("⚡ LEADFORGE - BUSINESS DISCOVERY & LEAD GENERATION")
     logger.info("=" * 60)
     logger.info(f"City:           {city}")
-    logger.info(f"Category:       {category}")
+    logger.info(f"Sector:         {category}")
+    logger.info(f"Sub-Category:   {sub_category or 'N/A'}")
+    logger.info(f"Platforms:      {platforms or ['google_maps']}")
     logger.info(f"Limit:          {limit}")
     logger.info(f"Website-filter: {website_filter}")
     logger.info("-" * 60)
@@ -60,10 +66,10 @@ async def run_pipeline(
     # Initialize a RUNNING search run log entry in the database
     search_id = search_repo.create(
         city=city,
-        category=category,
+        category=effective_cat,
         results_count=0,
         status="RUNNING",
-        search_query=f"{category} in {city}",
+        search_query=f"{effective_cat} in {city}",
         limit_requested=limit,
         started_at=started_at,
         scraper_version="2.0",
@@ -96,6 +102,8 @@ async def run_pipeline(
             website_filter=website_filter,
             search_id=search_id,
             campaign_name=output_file,
+            platforms=platforms,
+            sub_category=sub_category,
         )
         links = orchestrator.discovered_links
         found_count = getattr(orchestrator, "found_count", len(links))

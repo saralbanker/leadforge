@@ -447,8 +447,13 @@ async def collect_business_details_stream(
 
     try:
         idx = 0
-        async for link in links_iter:
+        async for item in links_iter:
             idx += 1
+            if isinstance(item, dict):
+                yield item
+                continue
+
+            link = str(item)
             try:
                 if idx > 1 and throttle_delay > 0:
                     await asyncio.sleep(throttle_delay)

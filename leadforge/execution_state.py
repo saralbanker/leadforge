@@ -273,9 +273,10 @@ class EntityStateMachine:
 
     TRANSITION_MAPS: Dict[str, Dict[str, List[str]]] = {
         "Business": {
-            "DISCOVERED": ["AUDITED", "QUALIFIED", "UNQUALIFIED", "ARCHIVED"],
-            "AUDITED": ["QUALIFIED", "UNQUALIFIED", "ARCHIVED"],
+            "DISCOVERED": ["AUDITED", "QUALIFIED", "DISQUALIFIED", "UNQUALIFIED", "ARCHIVED"],
+            "AUDITED": ["QUALIFIED", "DISQUALIFIED", "UNQUALIFIED", "ARCHIVED"],
             "QUALIFIED": ["OUTREACH_DRAFTED", "OUTREACH_SENT", "UNQUALIFIED", "ARCHIVED"],
+            "DISQUALIFIED": ["ARCHIVED"],
             "UNQUALIFIED": ["ARCHIVED"],
             "OUTREACH_DRAFTED": ["OUTREACH_SENT", "ARCHIVED"],
             "OUTREACH_SENT": ["CONVERTED", "REJECTED", "UNSUBSCRIBED", "ARCHIVED"],
@@ -285,6 +286,10 @@ class EntityStateMachine:
             "ARCHIVED": [],  # Terminal
         },
         "Opportunity": {
+            "PROSPECTING": ["QUALIFICATION", "CLOSED_LOST"],
+            "QUALIFICATION": ["PROPOSAL_SENT", "CLOSED_LOST"],
+            "PROPOSAL_SENT": ["NEGOTIATION", "CLOSED_LOST"],
+            "NEGOTIATION": ["CLOSED_WON", "CLOSED_LOST"],
             "OPEN": ["IN_PROGRESS", "QUALIFIED", "UNQUALIFIED"],
             "IN_PROGRESS": ["QUALIFIED", "UNQUALIFIED", "CLOSED_WON", "CLOSED_LOST"],
             "QUALIFIED": ["CLOSED_WON", "CLOSED_LOST"],
@@ -293,6 +298,7 @@ class EntityStateMachine:
             "CLOSED_LOST": [],  # Terminal
         },
         "Lead": {
+            "OPEN": ["CONTACTED", "UNQUALIFIED"],
             "NEW": ["CONTACTED", "QUALIFIED", "UNQUALIFIED"],
             "CONTACTED": ["QUALIFIED", "UNQUALIFIED", "LOST"],
             "QUALIFIED": ["LOST"],
@@ -337,10 +343,10 @@ class EntityStateMachine:
         current_state: str,
         next_state: str,
         triggering_event: Optional[str] = None,
-    ) -> None:
+    ) -> bool:
         """Validates that a transition from current_state to next_state is legal."""
         if current_state == next_state:
-            return  # No-op transition is allowed
+            return True  # No-op transition is allowed
 
         entity_map = cls.TRANSITION_MAPS.get(entity_type)
         if not entity_map:
@@ -355,6 +361,7 @@ class EntityStateMachine:
                 f"Invalid transition for {entity_type}: '{current_state}' -> '{next_state}'. "
                 f"Allowed transitions from '{current_state}': {allowed_next}"
             )
+        return True
 
     @classmethod
     def is_terminal(cls, entity_type: str, state: str) -> bool:

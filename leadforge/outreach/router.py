@@ -72,8 +72,24 @@ class CampaignRouter:
             # 4. Check category list criteria
             req_categories = criteria.get("categories")
             if req_categories is not None:
+                if not category_clean:
+                    # Unknown category can never satisfy a category-restricted campaign.
+                    continue
                 allowed_cats = [str(c).strip().lower() for c in req_categories]
-                if category_clean not in allowed_cats:
+                matched_cat = False
+                for c in allowed_cats:
+                    c_stem = c.rstrip("s")
+                    cat_stem = category_clean.rstrip("s")
+                    if (
+                        c == category_clean
+                        or c in category_clean
+                        or category_clean in c
+                        or (len(c_stem) >= 3 and c_stem in category_clean)
+                        or (len(cat_stem) >= 3 and cat_stem in c)
+                    ):
+                        matched_cat = True
+                        break
+                if not matched_cat:
                     continue
 
             # All conditions met, return matched campaign config

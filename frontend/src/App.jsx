@@ -9,7 +9,7 @@ import {
   Mail, Copy, Check, Edit3,
 } from 'lucide-react';
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000/api';
+const API_BASE = import.meta.env.VITE_API_BASE || (typeof window !== 'undefined' && window.location.origin.includes(':517') ? '/api' : 'http://localhost:8000/api');
 
 import LoadingSpinner from './components/LoadingSpinner';
 import ErrorState from './components/ErrorState';
@@ -19,26 +19,58 @@ import MetricCard from './components/MetricCard';
 import LocalLMControl from './components/LocalLMControl';
 
 
-// ── CATEGORIES ──────────────────────────────────────────────────────────────────
+// ── HIERARCHICAL CATEGORY TAXONOMY ──────────────────────────────────────────────
 
-const CATEGORIES = [
-  'Manufacturers', 'Exporters', 'Wholesalers', 'Retailers', 'Distributors',
-  'Restaurants', 'Hotels', 'Catering Services', 'Bakeries', 'Sweet Shops',
-  'Clinics / Doctors', 'Dental Clinics', 'Hospitals', 'Pharmacies',
-  'Real Estate Agents', 'Construction Companies', 'Interior Designers', 'Architects',
-  'IT Companies', 'Web Design Agencies', 'Digital Marketing Agencies',
-  'CA / Accountants', 'Lawyers', 'Event Planners',
-  'Wedding Photographers', 'Photographers', 'Videographers',
-  'Auto Repair Shops', 'Car Dealers', 'Driving Schools',
-  'Beauty Salons', 'Hair Salons', 'Spas', 'Gyms / Fitness Centers',
-  'Jewelers', 'Clothing Stores', 'Furniture Shops',
-  'Hardware Stores', 'Electrical Shops', 'Plumbers', 'Electricians',
-  'Pest Control Services', 'Packers & Movers', 'Courier Services',
-  'Travel Agencies', 'Schools', 'Coaching Centers', 'Tuition Centers',
-  'Printing Shops', 'Laundries', 'Tailoring Shops', 'Grocery Stores',
-  'Supermarkets', 'Electronics Stores', 'Optical Shops', 'Pet Shops',
-  'Nurseries / Plant Shops', 'Chartered Accountants', 'Insurance Agents',
+const INDUSTRY_TAXONOMY = {
+  'Manufacturing': [
+    'Plastics & Polymers',
+    'Boilers, Tanks & Pressure Vessels',
+    'CNC Machining & Precision Tooling',
+    'Chemicals, Dyes & Pigments',
+    'Electrical, Transformers & Switchgears',
+    'Metals, Forging & Foundry',
+    'Textiles, Spinning & Garments',
+    'Pharmaceuticals & Medical Devices',
+    'Food Processing & Agro Industries',
+    'Packaging & Commercial Printing',
+  ],
+  'Construction & Infrastructure': [
+    'Building Materials & RMC',
+    'Civil & Structural Contractors',
+    'Architects & Interior Designers',
+  ],
+  'Healthcare & Medical': [
+    'Specialty Hospitals & Clinics',
+    'Dental Implant Clinics',
+    'Diagnostic & Pathology Labs',
+  ],
+  'Automotive & Logistics': [
+    'Auto Components & Body Building',
+    'Freight & Logistics Operators',
+  ],
+  'Information Technology & Digital': [
+    'Software & Web Agencies',
+    'Cloud & IT Infrastructure',
+  ],
+  'Professional & Business Services': [
+    'Accounting & Corporate Law',
+    'Industrial & Environmental Consultants',
+  ],
+  'Wholesale, Distribution & Retail': [
+    'Industrial Wholesale & Trading',
+    'Distributors & Stockists',
+  ],
+};
+
+const PLATFORMS = [
+  { id: 'google_maps', label: 'Google Maps', icon: '📍' },
+  { id: 'indiamart', label: 'IndiaMart', icon: '🏢' },
+  { id: 'justdial', label: 'Justdial', icon: '📞' },
+  { id: 'tradeindia', label: 'TradeIndia', icon: '🌐' },
+  { id: 'website', label: 'Official Website', icon: '⚡' },
 ];
+
+const CATEGORIES = Object.keys(INDUSTRY_TAXONOMY);
 
 // ── HELPERS ─────────────────────────────────────────────────────────────────────
 
@@ -231,7 +263,24 @@ const BusinessDetailDrawer = ({ biz, detail, loading, onClose }) => {
             {/* Business Info */}
             <div>
               <div className="detail-section-title">Business Information</div>
-              <div className="detail-row"><Phone size={13} />{detail.phone || '—'}</div>
+              <div className="detail-row" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <Phone size={13} />
+                <span>{detail.phone || '—'}</span>
+                {detail.phone_source && (
+                  <span className="platform-tag">via {detail.phone_source}</span>
+                )}
+              </div>
+              {detail.phone_candidates && detail.phone_candidates.length > 1 && (
+                <div style={{ marginTop: '0.4rem', marginBottom: '0.5rem', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-color)', padding: '0.5rem 0.75rem', borderRadius: 6 }}>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 4, fontWeight: 600 }}>All Discovered Numbers ({detail.phone_candidates.length}):</div>
+                  {detail.phone_candidates.map((pc, idx) => (
+                    <div key={idx} style={{ fontSize: '0.75rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '2px 0' }}>
+                      <span>{pc.phone} <span style={{ opacity: 0.6, fontSize: '0.7rem' }}>({pc.phone_type || 'Phone'})</span></span>
+                      <span className="platform-tag">{pc.source}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
               {detail.contact_email && <div className="detail-row"><Globe size={13} />{detail.contact_email}</div>}
               {detail.website && <div className="detail-row"><Globe size={13} /><a href={detail.website} target="_blank" rel="noreferrer" style={{ color: 'var(--color-accent)' }}>{detail.website}</a></div>}
               {detail.address && <div className="detail-row"><MapPin size={13} />{detail.address}{detail.city ? `, ${detail.city}` : ''}</div>}
@@ -334,7 +383,7 @@ const BusinessDetailDrawer = ({ biz, detail, loading, onClose }) => {
 
 // ── EMAIL OUTREACH PANEL ──────────────────────────────────────────────────────
 
-const OutreachPanel = ({ opportunityId, draftsByOpp, setDraftsByOpp, API_BASE }) => {
+const OutreachPanel = ({ opportunityId, draftsByOpp, setDraftsByOpp, API_BASE, composerSubject, composerBody }) => {
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState(null);
 
@@ -347,7 +396,12 @@ const OutreachPanel = ({ opportunityId, draftsByOpp, setDraftsByOpp, API_BASE })
       const res = await fetch(`${API_BASE}/outreach/drafts/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ opportunity_id: opportunityId, force_regenerate: force }),
+        body: JSON.stringify({
+          opportunity_id: opportunityId,
+          force_regenerate: force,
+          custom_subject: composerSubject,
+          custom_body: composerBody,
+        }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -584,7 +638,12 @@ const OutreachPanel = ({ opportunityId, draftsByOpp, setDraftsByOpp, API_BASE })
           )}
 
           {draft.status === 'APPROVED' && (
-            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Approved. Will be sent on next delivery dispatch run.</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
+              <span style={{ fontSize: '0.72rem', color: '#10b981', fontWeight: 600 }}>Approved. Ready for delivery.</span>
+              <button className="btn-secondary" style={{ padding: '2px 8px', fontSize: '0.72rem' }} onClick={() => handleGenerate(true)}>
+                Regenerate Draft
+              </button>
+            </div>
           )}
         </div>
       )}
@@ -620,7 +679,9 @@ export default function App() {
 
   // Campaign tab
   const [location, setLocation] = useState('Ahmedabad');
-  const [category, setCategory] = useState('Manufacturers');
+  const [category, setCategory] = useState('Manufacturing');
+  const [subCategory, setSubCategory] = useState('Plastics & Polymers');
+  const [selectedPlatforms, setSelectedPlatforms] = useState(['google_maps', 'indiamart', 'justdial', 'tradeindia', 'website']);
   const [targetLeads, setTargetLeads] = useState(10);
   const [discoveryWebsiteFilter, setDiscoveryWebsiteFilter] = useState('ALL');
   const [status, setStatus] = useState({ is_running: false, current_task: null, last_result: null, error: null });
@@ -800,7 +861,10 @@ export default function App() {
       const data = await res.json();
       const mapped = {};
       data.forEach(d => {
-        mapped[d.opportunity_id] = d;
+        // Keep the most recent draft per opportunity
+        if (!mapped[d.opportunity_id]) {
+          mapped[d.opportunity_id] = d;
+        }
       });
       setDraftsByOpp(mapped);
       fetchOutreachMetrics();
@@ -879,20 +943,29 @@ export default function App() {
       const init = {};
       Object.entries(data).forEach(([k, v]) => { init[k] = v.value; });
       setEditedSettings(init);
+      if (data['outreach.composer_subject']?.value) {
+        setComposerSubject(data['outreach.composer_subject'].value);
+      }
+      if (data['outreach.composer_body']?.value) {
+        setComposerBody(data['outreach.composer_body'].value);
+      }
     } catch { /* ignore */ } finally {
       setLoadingSettings(false);
     }
   }, []);
 
-  const saveSetting = async (key) => {
+  const saveSetting = async (key, explicitValue = undefined) => {
+    const val = explicitValue !== undefined ? explicitValue : (editedSettings[key] ?? settingsData[key]?.value);
+    if (val === undefined) return;
     setSavingKey(key);
     try {
       await fetch(`${API_BASE}/settings/${encodeURIComponent(key)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ value: editedSettings[key] }),
+        body: JSON.stringify({ value: val }),
       });
-      setSettingsData(prev => ({ ...prev, [key]: { ...prev[key], value: editedSettings[key] } }));
+      setSettingsData(prev => ({ ...prev, [key]: { ...prev[key], value: val } }));
+      setEditedSettings(prev => ({ ...prev, [key]: val }));
     } catch { /* ignore */ } finally {
       setSavingKey(null);
     }
@@ -1066,6 +1139,10 @@ export default function App() {
   const handleLaunchCampaign = async (e) => {
     e.preventDefault();
     if (status.is_running) return;
+    if (selectedPlatforms.length === 0) {
+      alert('Please select at least one platform to search.');
+      return;
+    }
     try {
       const res = await fetch(`${API_BASE}/scrape`, {
         method: 'POST',
@@ -1073,6 +1150,8 @@ export default function App() {
         body: JSON.stringify({
           city: location,
           category,
+          sub_category: subCategory || null,
+          platforms: selectedPlatforms,
           limit: Number(targetLeads),
           no_website_only: discoveryWebsiteFilter === 'NO_WEBSITE',
           website_filter: discoveryWebsiteFilter,
@@ -1124,20 +1203,113 @@ export default function App() {
             <h2 className="panel-title"><Play size={16} color="var(--color-accent)" /> Campaign Configuration</h2>
             <form onSubmit={handleLaunchCampaign}>
               <div className="form-group">
-                <label className="form-label">Location</label>
+                <label className="form-label">Location (City / Region)</label>
                 <input type="text" className="form-input" value={location}
                   onChange={e => setLocation(e.target.value)} disabled={isRunning} required
-                  placeholder="City, area, or region…" />
+                  placeholder="e.g. Ahmedabad, Mumbai, Pune, Vadodara…" />
               </div>
+
+              {/* 2-Tier Cascading Category Selector */}
               <div className="form-group">
-                <label className="form-label">Business Category</label>
-                <input type="text" className="form-input" list="category-list"
-                  value={category} onChange={e => setCategory(e.target.value)}
-                  disabled={isRunning} placeholder="Type or select…" required />
-                <datalist id="category-list">
-                  {CATEGORIES.map(c => <option key={c} value={c} />)}
-                </datalist>
+                <label className="form-label">Industry Sector (Major Category)</label>
+                <select
+                  className="form-input"
+                  value={category}
+                  onChange={e => {
+                    const newCat = e.target.value;
+                    setCategory(newCat);
+                    const subList = INDUSTRY_TAXONOMY[newCat] || [];
+                    setSubCategory(subList[0] || '');
+                  }}
+                  disabled={isRunning}
+                  required
+                >
+                  {Object.keys(INDUSTRY_TAXONOMY).map(sec => (
+                    <option key={sec} value={sec}>{sec}</option>
+                  ))}
+                </select>
               </div>
+
+              <div className="form-group">
+                <label className="form-label">Specialized Niche / Sub-Category</label>
+                <select
+                  className="form-input"
+                  value={subCategory}
+                  onChange={e => setSubCategory(e.target.value)}
+                  disabled={isRunning}
+                  required
+                >
+                  {(INDUSTRY_TAXONOMY[category] || []).map(sub => (
+                    <option key={sub} value={sub}>{sub}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Multi-Platform Checkbox Selector */}
+              <div className="form-group">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
+                  <label className="form-label" style={{ marginBottom: 0 }}>Search Platforms</label>
+                  <div style={{ display: 'flex', gap: '0.35rem' }}>
+                    <button
+                      type="button"
+                      style={{ background: 'none', border: 'none', color: 'var(--color-accent)', fontSize: '0.72rem', cursor: 'pointer' }}
+                      onClick={() => setSelectedPlatforms(PLATFORMS.map(p => p.id))}
+                      disabled={isRunning}
+                    >
+                      All
+                    </button>
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>·</span>
+                    <button
+                      type="button"
+                      style={{ background: 'none', border: 'none', color: 'var(--color-accent)', fontSize: '0.72rem', cursor: 'pointer' }}
+                      onClick={() => setSelectedPlatforms(['google_maps'])}
+                      disabled={isRunning}
+                    >
+                      Maps Only
+                    </button>
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>·</span>
+                    <button
+                      type="button"
+                      style={{ background: 'none', border: 'none', color: 'var(--color-accent)', fontSize: '0.72rem', cursor: 'pointer' }}
+                      onClick={() => setSelectedPlatforms(['indiamart', 'justdial', 'tradeindia'])}
+                      disabled={isRunning}
+                    >
+                      B2B Only
+                    </button>
+                  </div>
+                </div>
+                <div className="platform-checkbox-group">
+                  {PLATFORMS.map(p => {
+                    const isChecked = selectedPlatforms.includes(p.id);
+                    return (
+                      <label
+                        key={p.id}
+                        className={`platform-checkbox-label ${isChecked ? 'active' : ''}`}
+                        onClick={() => {
+                          if (isRunning) return;
+                          if (isChecked) {
+                            if (selectedPlatforms.length > 1) {
+                              setSelectedPlatforms(selectedPlatforms.filter(id => id !== p.id));
+                            }
+                          } else {
+                            setSelectedPlatforms([...selectedPlatforms, p.id]);
+                          }
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => {}}
+                          style={{ accentColor: 'var(--color-accent)', cursor: 'pointer' }}
+                          disabled={isRunning}
+                        />
+                        <span>{p.icon} {p.label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
               <div className="form-group">
                 <label className="form-label">Website Filter</label>
                 <select className="form-input" value={discoveryWebsiteFilter}
@@ -1147,6 +1319,7 @@ export default function App() {
                   <option value="NO_WEBSITE">Businesses Without Website Only</option>
                 </select>
               </div>
+
               <div className="form-group">
                 <label className="form-label">Target Qualified Leads</label>
                 <input type="number" className="form-input" value={targetLeads}
@@ -1646,6 +1819,8 @@ export default function App() {
                                       draftsByOpp={draftsByOpp}
                                       setDraftsByOpp={setDraftsByOpp}
                                       API_BASE={API_BASE}
+                                      composerSubject={composerSubject}
+                                      composerBody={composerBody}
                                     />
                                   </>
                                 )
@@ -2227,7 +2402,10 @@ export default function App() {
       const genRes = await fetch(`${API_BASE}/outreach/drafts/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ opportunity_id: oppId, force_regenerate: true }),
+        body: JSON.stringify({
+          opportunity_id: oppId,
+          force_regenerate: true,
+        }),
       });
 
       if (genRes.ok) {
@@ -2242,7 +2420,7 @@ export default function App() {
     }
   };
 
-  const handleBatchGenerateDrafts = async (bizIds) => {
+  const handleBatchGenerateDrafts = async (bizIds, useCustomTemplate = false) => {
     if (!bizIds || bizIds.length === 0) return;
     setIsBatchGenerating(true);
     setBatchProgress({ current: 0, total: bizIds.length, currentName: '' });
@@ -2266,7 +2444,11 @@ export default function App() {
           await fetch(`${API_BASE}/outreach/drafts/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ opportunity_id: oppId, force_regenerate: true }),
+            body: JSON.stringify({
+              opportunity_id: oppId,
+              force_regenerate: true,
+              ...(useCustomTemplate ? { custom_subject: composerSubject, custom_body: composerBody } : {}),
+            }),
           });
         }
       } catch {
@@ -2424,23 +2606,51 @@ export default function App() {
             {/* Email Subject & Body Composer */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
               <div>
-                <label className="form-label" style={{ fontSize: '0.75rem', fontWeight: 600 }}>Email Subject Line Template</label>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                  <label className="form-label" style={{ fontSize: '0.75rem', fontWeight: 600, margin: 0 }}>Email Subject Line Template</label>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ fontSize: '0.68rem', padding: '2px 6px', display: 'flex', alignItems: 'center', gap: 4 }}
+                    onClick={() => saveSetting('outreach.composer_subject', composerSubject)}
+                  >
+                    <Check size={10} /> Save Subject
+                  </button>
+                </div>
                 <input
                   className="form-input"
                   style={{ padding: '0.5rem 0.75rem', fontSize: '0.84rem' }}
                   value={composerSubject}
-                  onChange={e => setComposerSubject(e.target.value)}
+                  onChange={e => {
+                    setComposerSubject(e.target.value);
+                    setEditedSettings(prev => ({ ...prev, 'outreach.composer_subject': e.target.value }));
+                  }}
+                  onBlur={() => saveSetting('outreach.composer_subject', composerSubject)}
                   placeholder="e.g. order question re: {business_name}"
                 />
               </div>
               <div>
-                <label className="form-label" style={{ fontSize: '0.75rem', fontWeight: 600 }}>Email Body Template</label>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                  <label className="form-label" style={{ fontSize: '0.75rem', fontWeight: 600, margin: 0 }}>Email Body Template</label>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ fontSize: '0.68rem', padding: '2px 6px', display: 'flex', alignItems: 'center', gap: 4 }}
+                    onClick={() => saveSetting('outreach.composer_body', composerBody)}
+                  >
+                    <Check size={10} /> Save Body
+                  </button>
+                </div>
                 <textarea
                   className="form-input"
                   rows={4}
                   style={{ padding: '0.6rem 0.75rem', fontSize: '0.82rem', fontFamily: 'monospace' }}
                   value={composerBody}
-                  onChange={e => setComposerBody(e.target.value)}
+                  onChange={e => {
+                    setComposerBody(e.target.value);
+                    setEditedSettings(prev => ({ ...prev, 'outreach.composer_body': e.target.value }));
+                  }}
+                  onBlur={() => saveSetting('outreach.composer_body', composerBody)}
                   placeholder="Type your email template body..."
                 />
                 <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 4, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -2476,7 +2686,7 @@ export default function App() {
               <button
                 className="btn-primary"
                 style={{ marginTop: 'auto', padding: '0.45rem 0.75rem', fontSize: '0.78rem', width: '100%' }}
-                onClick={() => handleBatchGenerateDrafts(filteredProspects.map(b => b.id))}
+                onClick={() => handleBatchGenerateDrafts(filteredProspects.map(b => b.id), true)}
                 disabled={isBatchGenerating || filteredProspects.length === 0}
               >
                 {isBatchGenerating ? <RefreshCw size={13} style={{ animation: 'spin 1s linear infinite' }} /> : <Zap size={13} />}
@@ -2885,7 +3095,7 @@ export default function App() {
                           </>
                         )}
 
-                        {(d.status === 'REJECTED' || d.status === 'FAILED' || d.status === 'APPROVED' || d.status === 'SENT') && (
+                        {(d.status === 'REJECTED' || d.status === 'FAILED' || d.status === 'APPROVED' || d.status === 'PENDING_APPROVAL') && (
                           <button
                             className="btn-secondary"
                             style={{ fontSize: '0.75rem' }}
@@ -2893,7 +3103,10 @@ export default function App() {
                               await fetch(`${API_BASE}/outreach/drafts/generate`, {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ opportunity_id: d.opportunity_id, force_regenerate: true }),
+                                body: JSON.stringify({
+                                  opportunity_id: d.opportunity_id,
+                                  force_regenerate: true,
+                                }),
                               });
                               fetchDrafts();
                             }}

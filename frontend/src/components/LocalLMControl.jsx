@@ -82,7 +82,7 @@ export default function LocalLMControl({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           api_url: editedSettings['llm.api_url'] || settingsData['llm.api_url']?.value || 'http://localhost:11434',
-          model_name: editedSettings['llm.model_name'] || settingsData['llm.model_name']?.value || 'llama3.2:3b',
+          model_name: editedSettings['llm.model_name'] || settingsData['llm.model_name']?.value || 'llama3.1:8b',
           system_prompt: editedSettings['llm.system_prompt'] || settingsData['llm.system_prompt']?.value || DEFAULT_SYSTEM_PROMPT,
           prompt: testPromptInput,
           temperature: parseFloat(editedSettings['llm.temperature'] ?? settingsData['llm.temperature']?.value ?? '0.2'),
@@ -213,7 +213,7 @@ export default function LocalLMControl({
               onClick={() => {
                 const nextVal = isEnabled ? 'false' : 'true';
                 setEditedSettings(prev => ({ ...prev, ['llm.enabled']: nextVal }));
-                saveSetting('llm.enabled');
+                saveSetting('llm.enabled', nextVal);
               }}
             >
               Toggle
@@ -251,9 +251,9 @@ export default function LocalLMControl({
             <input
               type="text"
               className="form-input"
-              placeholder="e.g. llama3.2:3b, mistral, qwen2.5:3b"
+              placeholder="e.g. llama3.1:8b, mistral, qwen2.5:3b"
               style={{ width: '100%', padding: '0.4rem 0.6rem', fontSize: '0.8rem', fontFamily: 'monospace' }}
-              value={editedSettings['llm.model_name'] ?? settingsData['llm.model_name']?.value ?? 'llama3.2:3b'}
+              value={editedSettings['llm.model_name'] ?? settingsData['llm.model_name']?.value ?? 'llama3.1:8b'}
               onChange={e => setEditedSettings(prev => ({ ...prev, ['llm.model_name']: e.target.value }))}
             />
             {editedSettings['llm.model_name'] && editedSettings['llm.model_name'] !== settingsData['llm.model_name']?.value && (

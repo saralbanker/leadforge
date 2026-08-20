@@ -24,6 +24,9 @@ logger = get_logger()
 from leadforge.enrichment.orchestrator import EmailEnrichmentOrchestrator
 enrichment_orchestrator = EmailEnrichmentOrchestrator()
 
+from leadforge.enrichment.phone_orchestrator import PhoneEnrichmentOrchestrator
+phone_enrichment_orchestrator = PhoneEnrichmentOrchestrator()
+
 
 cors_origins_env = os.getenv("CORS_ALLOWED_ORIGINS")
 if cors_origins_env:
@@ -32,31 +35,66 @@ else:
     allowed_origins = [
         "http://localhost:5173",
         "http://localhost:5174",
+        "http://localhost:5175",
         "http://localhost:3000",
+        "http://localhost:8000",
         "http://127.0.0.1:5173",
         "http://127.0.0.1:5174",
+        "http://127.0.0.1:5175",
         "http://127.0.0.1:3000",
+        "http://127.0.0.1:8000",
     ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+from fastapi.staticfiles import StaticFiles
+
+# ── Frontend Static Assets & Root Route ────────────────────────────────────────
+
+frontend_dist = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist")
+if os.path.exists(frontend_dist):
+    assets_dir = os.path.join(frontend_dist, "assets")
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    @app.get("/")
+    async def serve_index():
+        return FileResponse(os.path.join(frontend_dist, "index.html"))
+
+    @app.get("/favicon.svg")
+    async def serve_favicon():
+        fav = os.path.join(frontend_dist, "favicon.svg")
+        if os.path.exists(fav):
+            return FileResponse(fav)
+        return {"status": "ok"}
+else:
+    @app.get("/")
+    async def serve_root():
+        return {
+            "name": "LeadForge API",
+            "version": "2.0",
+            "status": "operational",
+            "docs_url": "/docs",
+        }
 
 
-
-
-# ── Scraper ────────────────────────────────────────────────────────────────────
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "service": "LeadForge"}
 
 
 class ScrapeRequest(BaseModel):
     city: str
     category: str
+    sub_category: Optional[str] = None
+    platforms: Optional[List[str]] = ["google_maps", "indiamart", "justdial", "tradeindia"]
     limit: int = 50
     no_website_only: bool = False
     website_filter: Optional[str] = "ALL"
@@ -71,15 +109,28 @@ task_status = {
 
 
 async def run_scraper_task(
-    city: str, category: str, limit: int, no_website_only: bool = False, website_filter: str = "ALL"
+    city: str,
+    category: str,
+    limit: int,
+    no_website_only: bool = False,
+    website_filter: str = "ALL",
+    platforms: Optional[List[str]] = None,
+    sub_category: Optional[str] = None,
 ):
     global task_status
     try:
         task_status["is_running"] = True
         task_status["error"] = None
-        task_status["current_task"] = f"Searching for {category} in {city}..."
+        target_display = f"{sub_category} ({category})" if sub_category else category
+        task_status["current_task"] = f"Searching for {target_display} in {city}..."
         result = await run_pipeline(
-            city, category, limit, no_website_only=no_website_only, website_filter=website_filter
+            city,
+            category,
+            limit,
+            no_website_only=no_website_only,
+            website_filter=website_filter,
+            platforms=platforms,
+            sub_category=sub_category,
         )
         task_status["last_result"] = result
         task_status["current_task"] = "Completed successfully."
@@ -91,13 +142,21 @@ async def run_scraper_task(
         task_status["is_running"] = False
 
 
+@app.get("/api/taxonomy")
+async def get_taxonomy():
+    """Returns the full hierarchical industry and manufacturing taxonomy."""
+    from leadforge.taxonomy import get_taxonomy_tree
+    return get_taxonomy_tree()
+
+
 @app.post("/api/scrape")
 async def start_scrape(req: ScrapeRequest, background_tasks: BackgroundTasks):
     if task_status["is_running"]:
         raise HTTPException(status_code=400, detail="Scraper is already running.")
     task_status["is_running"] = True
     task_status["error"] = None
-    task_status["current_task"] = f"Initializing search for {req.category} in {req.city}..."
+    target_display = f"{req.sub_category} ({req.category})" if req.sub_category else req.category
+    task_status["current_task"] = f"Initializing search for {target_display} in {req.city}..."
     
     # Sync no_website_only with website_filter if website_filter is explicitly NO_WEBSITE
     effective_no_website = req.no_website_only or (req.website_filter == "NO_WEBSITE")
@@ -105,7 +164,14 @@ async def start_scrape(req: ScrapeRequest, background_tasks: BackgroundTasks):
     
     try:
         background_tasks.add_task(
-            run_scraper_task, req.city, req.category, req.limit, effective_no_website, effective_filter
+            run_scraper_task,
+            req.city,
+            req.category,
+            req.limit,
+            effective_no_website,
+            effective_filter,
+            req.platforms,
+            req.sub_category,
         )
     except Exception as e:
         task_status["is_running"] = False
@@ -231,11 +297,7 @@ async def get_leads(filename: str):
                     conn.close()
                 leads = repo.get_leads_by_campaign(filename)
 
-        if not leads:
-            raise HTTPException(status_code=404, detail="Campaign / leads not found.")
-        return leads
-    except HTTPException:
-        raise
+        return leads or []
     except Exception as e:
         logger.error(f"Error reading leads campaign: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error reading leads: {str(e)}")
@@ -573,7 +635,7 @@ async def get_llm_status():
 
     repo = SQLiteSettingsRepository()
     api_url = repo.get_str("llm.api_url", "http://localhost:11434")
-    model_name = repo.get_str("llm.model_name", "llama3.2:3b")
+    model_name = repo.get_str("llm.model_name", "llama3.1:8b")
     enabled = repo.get_str("llm.enabled", "true").lower() in ("true", "1", "yes")
 
     conn_status = await asyncio.to_thread(OllamaHookGenerator.test_connection, api_url)
@@ -597,7 +659,7 @@ async def test_llm_inference(req: LLMTestRequest):
 
     repo = SQLiteSettingsRepository()
     api_url = req.api_url or repo.get_str("llm.api_url", "http://localhost:11434")
-    model_name = req.model_name or repo.get_str("llm.model_name", "llama3.2:3b")
+    model_name = req.model_name or repo.get_str("llm.model_name", "llama3.1:8b")
     system_prompt = req.system_prompt or repo.get_str("llm.system_prompt", "")
     temperature = req.temperature if req.temperature is not None else repo.get_float("llm.temperature", 0.2)
     max_tokens = req.max_tokens or repo.get_int("llm.max_tokens", 150)
@@ -772,6 +834,8 @@ async def get_outreach_metrics():
 class GenerateDraftRequest(BaseModel):
     opportunity_id: str
     force_regenerate: bool = False
+    custom_subject: Optional[str] = None
+    custom_body: Optional[str] = None
 
 
 @app.post("/api/outreach/drafts/generate")
@@ -794,8 +858,8 @@ async def generate_draft(req: GenerateDraftRequest):
         # Fetch opportunity details
         cursor.execute(
             """
-            SELECT o.id as opportunity_id, o.business_id, b.name as business_name, 
-                   b.website_domain, b.contact_email, b.rating, b.review_count,
+            SELECT o.id as opportunity_id, o.business_id, b.name as business_name,
+                   b.website_domain, b.contact_email, b.display_phone, b.rating, b.review_count,
                    bt.name as category, a.city, a.area
             FROM opportunities o
             JOIN businesses b ON o.business_id = b.id
@@ -813,6 +877,7 @@ async def generate_draft(req: GenerateDraftRequest):
         business_name = opp["business_name"]
         website_domain = opp["website_domain"]
         contact_email = opp["contact_email"]
+        display_phone = opp["display_phone"]
         rating = opp["rating"] or 0.0
         review_count = opp["review_count"] or 0
         category = opp["category"] or ""
@@ -969,6 +1034,40 @@ async def generate_draft(req: GenerateDraftRequest):
             except Exception as enrich_err:
                 logger.warning(f"Multi-provider enrichment error for business {business_id}: {enrich_err}")
 
+        # If the business has no phone on file, fallback to multi-provider phone enrichment
+        # (IndiaMart, Justdial, TradeIndia, and the business's own website)
+        if not display_phone:
+            try:
+                from leadforge.normalizer import canonical_phone
+
+                p_phone, p_source, c_phone, cand_list = await phone_enrichment_orchestrator.enrich_phone(
+                    business_profile={
+                        "name": business_name,
+                        "city": city,
+                        "category": category,
+                        "website": website_domain,
+                        "website_domain": website_domain,
+                    },
+                )
+                if p_phone:
+                    display_phone = p_phone
+                    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    cursor.execute(
+                        "UPDATE businesses SET display_phone = ?, normalized_phone = ?, phone_source = ?, phone_candidates = ?, updated_at = ? WHERE id = ?",
+                        (p_phone, canonical_phone(p_phone), p_source, json.dumps(cand_list), now_str, business_id),
+                    )
+                    conn.commit()
+                    append_event(
+                        event_type="PHONE_DISCOVERED",
+                        entity_type="Business",
+                        entity_id=business_id,
+                        payload={"discovered_phone": p_phone, "source": p_source},
+                        conn=conn,
+                    )
+                    conn.commit()
+            except Exception as enrich_err:
+                logger.warning(f"Phone enrichment error for business {business_id}: {enrich_err}")
+
         # Log discovery attempt
         attempt_id = str(uuid.uuid4())
         discovery_status = "SUCCESS" if recipient_email else "NO_EMAIL_FOUND"
@@ -1019,7 +1118,7 @@ async def generate_draft(req: GenerateDraftRequest):
                 detail="Opt-Out Guard: This business profile is unsubscribed and suppressed from outreach.",
             )
 
-        if is_duplicate_outreach(business_id, email=recipient_email, domain=website_domain, exclude_draft_id=existing_draft_id):
+        if not req.force_regenerate and is_duplicate_outreach(business_id, email=recipient_email, domain=website_domain, exclude_draft_id=existing_draft_id):
             raise HTTPException(
                 status_code=409,
                 detail="Deduplication Alert: This company or email has already been contacted or queued.",
@@ -1040,22 +1139,42 @@ async def generate_draft(req: GenerateDraftRequest):
         )
 
         # 5. Compile copy templates
-        subject_tpl = campaign["copy_template"]["subject"]
-        body_tpl = campaign["copy_template"]["body_structure"]
-
-        subject = subject_tpl.format(business_name=business_name)
-        body = body_tpl.format(observation_hook=hook, city=city, business_name=business_name)
-
-        # 6. Quality Scoring (evaluated on core email copy)
-        quality = EmailQualityEngine.score_draft(body)
-
-        # Append compliance footer after quality scoring
+        import collections
         from leadforge.repositories.settings import SettingsCache
         from leadforge.outreach.generator import compile_compliance_footer
         settings_cache = SettingsCache()
+
+        # Custom template override from request or campaign default
+        custom_sub = (req.custom_subject or "").strip()
+        custom_bod = (req.custom_body or "").strip()
+
+        subject_tpl = custom_sub or campaign["copy_template"]["subject"]
+        body_tpl = custom_bod or campaign["copy_template"]["body_structure"]
+        campaign_name = "Custom Template Outreach" if (custom_sub or custom_bod) else campaign["name"]
+
+        area_val = opp["area"] if "area" in opp.keys() and opp["area"] else ""
+        template_vars = collections.defaultdict(str, {
+            "business_name": business_name or "",
+            "city": city or "",
+            "category": category or "",
+            "area": area_val or "",
+            "observation_hook": hook or "",
+            "rating": str(rating) if rating else "",
+            "review_count": str(review_count) if review_count else "",
+            "website_domain": website_domain or "",
+            "scraped_text": audit["cleaned_text"] or "",
+        })
+
+        subject = subject_tpl.format_map(template_vars)
+        body = body_tpl.format_map(template_vars)
+
+        # Append compliance footer if present and not already in body
         footer = compile_compliance_footer(settings_cache)
-        if footer:
+        if footer and footer not in body:
             body = body + footer
+
+        # 6. Quality Scoring (evaluated on email body)
+        quality = EmailQualityEngine.score_draft(body)
 
         # 7. Store draft
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1067,7 +1186,7 @@ async def generate_draft(req: GenerateDraftRequest):
                 SET campaign_name = ?, recipient_email = ?, subject = ?, body = ?, status = 'PENDING_APPROVAL', error_message = NULL, updated_at = ?
                 WHERE id = ?
                 """,
-                (campaign["name"], recipient_email, subject, body, now_str, draft_id),
+                (campaign_name, recipient_email, subject, body, now_str, draft_id),
             )
             append_event(
                 event_type="EMAIL_DRAFT_REGENERATED",
@@ -1075,7 +1194,7 @@ async def generate_draft(req: GenerateDraftRequest):
                 entity_id=draft_id,
                 payload={
                     "opportunity_id": opportunity_id,
-                    "campaign_name": campaign["name"],
+                    "campaign_name": campaign_name,
                     "recipient_email": recipient_email,
                     "subject": subject,
                 },
@@ -1088,7 +1207,7 @@ async def generate_draft(req: GenerateDraftRequest):
                 INSERT INTO email_drafts (id, opportunity_id, campaign_name, recipient_email, subject, body, status, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, 'PENDING_APPROVAL', ?, ?)
                 """,
-                (draft_id, opportunity_id, campaign["name"], recipient_email, subject, body, now_str, now_str),
+                (draft_id, opportunity_id, campaign_name, recipient_email, subject, body, now_str, now_str),
             )
             append_event(
                 event_type="EMAIL_DRAFT_GENERATED",
@@ -1096,7 +1215,7 @@ async def generate_draft(req: GenerateDraftRequest):
                 entity_id=draft_id,
                 payload={
                     "opportunity_id": opportunity_id,
-                    "campaign_name": campaign["name"],
+                    "campaign_name": campaign_name,
                     "recipient_email": recipient_email,
                     "subject": subject,
                 },
@@ -1110,6 +1229,7 @@ async def generate_draft(req: GenerateDraftRequest):
             "opportunity_id": opportunity_id,
             "campaign_name": campaign["name"],
             "recipient_email": recipient_email,
+            "recipient_phone": display_phone,
             "subject": subject,
             "body": body,
             "status": "PENDING_APPROVAL",
