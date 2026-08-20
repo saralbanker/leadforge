@@ -95,6 +95,49 @@ class SQLiteEnrichmentRepository:
         finally:
             conn.close()
 
+    def get_recent_discovery(
+        self, business_id: str, max_age_hours: int = 720
+    ) -> Optional[Dict[str, Any]]:
+        """Returns this business's most recent discovery attempt, if it is still fresh.
+
+        Lets the orchestrator skip re-crawling a site whose address was already
+        found. SUCCESS is treated as durable; NO_EMAIL_FOUND gets a shorter
+        cooldown so a site that later adds a contact page is picked up again.
+        """
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT discovered_email, discovery_status, last_attempt_at
+                FROM email_discovery_attempts
+                WHERE business_id = ?
+                ORDER BY last_attempt_at DESC
+                LIMIT 1
+                """,
+                (business_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            cutoff_hours = max_age_hours if row["discovery_status"] == "SUCCESS" else min(max_age_hours, 168)
+            try:
+                last = datetime.strptime(row["last_attempt_at"][:19], "%Y-%m-%dT%H:%M:%S").replace(
+                    tzinfo=timezone.utc
+                )
+            except (ValueError, TypeError):
+                return None
+
+            age_hours = (datetime.now(timezone.utc) - last).total_seconds() / 3600.0
+            if age_hours > cutoff_hours:
+                return None
+            return dict(row)
+        except Exception:
+            return None
+        finally:
+            conn.close()
+
     def get_cached_response(self, cache_key: str) -> Optional[Dict[str, Any]]:
         self.initialize_schema()
         conn = get_db_connection()

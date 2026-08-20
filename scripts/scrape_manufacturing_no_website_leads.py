@@ -194,6 +194,7 @@ async def run_manufacturing_email_scraper(target_count: int = 10) -> List[Dict[s
     )
 
     enriched_leads: List[Dict[str, Any]] = []
+    skipped_no_email = 0
     start_time = time.time()
 
     for idx, target in enumerate(MANUFACTURING_TARGETS[:target_count], 1):
@@ -236,18 +237,23 @@ async def run_manufacturing_email_scraper(target_count: int = 10) -> List[Dict[s
                 provider_used = top_cand.source_provider
                 confidence_score = top_cand.confidence_score
             else:
-                # Deterministic B2B manufacturing domain contact standard for verified industrial unit
-                name_tokens = [t.lower() for t in name.split() if t.lower() not in {"works", "&", "and", "industries", "pumps", "tubes", "pack", "dye", "chem"}]
-                prefix = "".join([c for c in name_tokens[0] if c.isalnum()]) if name_tokens else "sales"
-                discovered_email = f"sales@{prefix}mfg.co.in"
-                provider_used = "B2B Industrial Directory Index"
-                confidence_score = 0.82
+                # No verifiable address found. Do NOT invent one — a guessed address
+                # bounces, and bounces damage sender reputation far more than a
+                # missing lead does.
+                discovered_email = ""
+                provider_used = ""
+                confidence_score = 0.0
         except Exception as e:
             logger.warning(f"Enrichment exception for {name}: {e}")
-            prefix = "".join([c for c in name.lower().split()[0] if c.isalnum()])
-            discovered_email = f"info@{prefix}industries.in"
-            provider_used = "B2B Registry Index"
-            confidence_score = 0.78
+            discovered_email = ""
+            provider_used = ""
+            confidence_score = 0.0
+
+        if not discovered_email:
+            print(f"    \u23ed\ufe0f  SKIPPED \u2014 no verifiable email discovered (not fabricating one).")
+            logger.info(f"Skipping '{name}': email enrichment found no verifiable address.")
+            skipped_no_email += 1
+            continue
 
         # Step 2: Generate High-Converting B2B Manufacturing Pitch
         # Explicitly NO Google review mention: grounded entirely in manufacturing capabilities & procurement workflow
@@ -399,6 +405,10 @@ async def run_manufacturing_email_scraper(target_count: int = 10) -> List[Dict[s
 
     print("\n" + "=" * 130)
     print(f"✅ TEST RUN COMPLETED: Scraped & Enriched {len(enriched_leads)} Manufacturing Businesses (No-Website) in {elapsed:.2f}s")
+    if skipped_no_email:
+        print(f"⏭️  SKIPPED {skipped_no_email} lead(s): no verifiable email address could be discovered.")
+        print("    These were not written to the database. Reach them by phone, or")
+        print("    fix email enrichment — see the directory-provider findings in the audit.")
     print("=" * 130)
     print(f"{'#':<3} | {'Manufacturing Business':<34} | {'City':<10} | {'Industrial Estate':<28} | {'Scraped Email Address':<28} | {'Score'}")
     print("-" * 130)

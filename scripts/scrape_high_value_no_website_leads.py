@@ -274,11 +274,12 @@ async def run_high_value_no_website_pipeline(target_count: int = 20):
     ]
     orchestrator = EmailEnrichmentOrchestrator(
         providers=providers,
-        aggregator=EmailCandidateAggregator(verify_mx=False)
+        aggregator=EmailCandidateAggregator(verify_mx=True)
     )
     generator = OllamaHookGenerator()
 
     enriched_leads: List[Dict[str, Any]] = []
+    skipped_no_email = 0
     start_time = time.time()
 
     conn = get_db_connection()
@@ -321,16 +322,22 @@ async def run_high_value_no_website_pipeline(target_count: int = 20):
                 provider_used = top_cand.source_provider
                 confidence_pct = int(top_cand.confidence_score * 100)
             else:
-                # Deterministic canonical directory corporate email format based on business name
-                domain_slug = "".join([c for c in name.lower().split()[0] if c.isalnum()])
-                discovered_email = f"contact@{domain_slug}group.in"
-                provider_used = "B2B Directory Index"
-                confidence_pct = 80
+                # No verifiable address found. Do NOT invent one — a guessed address
+                # bounces, and bounces damage sender reputation far more than a
+                # missing lead does.
+                discovered_email = ""
+                provider_used = ""
+                confidence_pct = 0
         except Exception as e:
-            domain_slug = "".join([c for c in name.lower().split()[0] if c.isalnum()])
-            discovered_email = f"info@{domain_slug}india.com"
-            provider_used = "Regional Directory Index"
-            confidence_pct = 75
+            logger.warning(f"Enrichment exception for {name}: {e}")
+            discovered_email = ""
+            provider_used = ""
+            confidence_pct = 0
+
+        if not discovered_email:
+            print(f"    \u23ed\ufe0f  SKIPPED \u2014 no verifiable email discovered (not fabricating one).")
+            skipped_no_email += 1
+            continue
 
         # Step 2: Generate High-Impact Personalized Outreach Pitch for No-Website Business
         hook = (
@@ -433,6 +440,8 @@ async def run_high_value_no_website_pipeline(target_count: int = 20):
 
     print("\n" + "=" * 115)
     print(f"🎉 PIPELINE COMPLETED: Scraped, Enriched & Drafted {len(enriched_leads)} High-Value 'No-Website' Businesses in {elapsed:.2f}s")
+    if skipped_no_email:
+        print(f"⏭️  SKIPPED {skipped_no_email} lead(s): no verifiable email address could be discovered.")
     print("=" * 115)
     print(f"{'#':<3} | {'Business Name':<28} | {'City':<10} | {'Est. Revenue':<14} | {'Reviews':<7} | {'Enriched Email':<28} | {'Score'}")
     print("-" * 115)

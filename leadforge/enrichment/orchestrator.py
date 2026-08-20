@@ -42,13 +42,17 @@ class EmailEnrichmentOrchestrator:
         self._providers.append(provider)
 
     async def enrich_business(
-        self, business_profile: Dict[str, Any], global_timeout: float = 12.0
+        self,
+        business_profile: Dict[str, Any],
+        global_timeout: float = 12.0,
+        force: bool = False,
     ) -> tuple[Optional[EnrichmentResult], List[EnrichmentResult]]:
         """Executes multi-provider enrichment, aggregates results, and updates SQLite.
 
         Args:
             business_profile: Dict containing business_id, name, phone, website_domain, city, etc.
             global_timeout: Maximum execution timeout across all providers.
+            force: Re-crawl even if a recent discovery exists for this business.
 
         Returns:
             Tuple of (top_selected_candidate, all_ranked_candidates)
@@ -63,6 +67,29 @@ class EmailEnrichmentOrchestrator:
             or business_profile.get("website")
             or ""
         )
+
+        # Skip businesses whose address was already discovered recently. The
+        # attempts table was previously written but never read, so every run
+        # re-crawled sites that had already yielded an address.
+        if business_id and not force:
+            try:
+                prior = self._repo.get_recent_discovery(business_id)
+            except Exception:
+                prior = None
+            if prior and prior.get("discovered_email"):
+                logger.info(
+                    f"[EnrichmentOrchestrator] Reusing '{prior['discovered_email']}' "
+                    f"discovered {prior.get('last_attempt_at')} for "
+                    f"'{business_profile.get('name')}' (pass force=True to re-crawl)."
+                )
+                cached = EnrichmentResult(
+                    email=prior["discovered_email"],
+                    source_provider="cache",
+                    source_url="",
+                    confidence_score=0.90,
+                    discovery_context="prior_discovery",
+                )
+                return cached, [cached]
 
         active_providers = [p for p in self._providers if p.is_enabled()]
         if not active_providers:
