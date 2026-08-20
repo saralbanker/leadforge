@@ -32,3 +32,5 @@ dist-ssr/
 *.sln
 *.sw?
 leadforge.db
+leadforge.db-shm
+leadforge.db-wal

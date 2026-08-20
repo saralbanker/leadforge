@@ -124,6 +124,54 @@ def normalize_domain(url: str) -> str:
         return ""
 
 
+# Zero-width and bidi characters that Google Maps listings pick up and that
+# make a subject line look machine-generated to a spam filter.
+_INVISIBLE_CHARS = re.compile(r"[\u200b-\u200f\u202a-\u202e\ufeff]")
+
+# Separators after which a Maps listing usually starts keyword-stuffing:
+# "Noble Brothers | Tarpaulin Manufacturer in Ahmedabad | Hdpe ..."
+_NAME_SPLIT = re.compile(r"\s*[|｜]\s*|\s+[-–—]\s+|\s*\(")
+
+_ENTITY_SUFFIX = re.compile(
+    r"\b(pvt\.?\s*ltd\.?|private\s+limited|ltd\.?|llp|inc\.?|co\.?)\s*$",
+    re.IGNORECASE,
+)
+
+
+def clean_business_name(name: str, max_length: int = 42) -> str:
+    """Reduces an SEO-stuffed Maps listing to the name a human would use.
+
+    Listings routinely carry their whole keyword strategy in the title -
+    "ADORN AESTHETICS - Best Hair Transplant Clinic in Ahmedabad | Cosmetic
+    Surgery in Ahmedabad | ..." at 124 characters. Dropped into a subject
+    line verbatim that reads as bulk mail. Keeps the leading segment, which
+    is nearly always the trading name.
+    """
+    if not name:
+        return ""
+
+    cleaned = _INVISIBLE_CHARS.sub("", name)
+    cleaned = " ".join(cleaned.split())
+
+    head = _NAME_SPLIT.split(cleaned, maxsplit=1)[0].strip(" ,-–—|(")
+    if not head:
+        head = cleaned
+
+    # A separator can sit mid-name ("Dr. Arth Shah - Plastic Surgeon"); if the
+    # split left almost nothing, keep more of the original instead.
+    if len(head) < 3:
+        head = cleaned
+
+    if len(head) > max_length:
+        truncated = head[:max_length].rsplit(" ", 1)[0]
+        head = truncated or head[:max_length]
+
+    # Never end on a dangling conjunction or punctuation ("Elite Surgery Clinic &").
+    head = re.sub(r"\s*(?:&|and|\+|,|-|–|—)\s*$", "", head.strip(), flags=re.IGNORECASE)
+
+    return head.strip() or cleaned[:max_length].strip()
+
+
 def normalize_category(category: str) -> str:
     """Standardizes category strings into a clean title-cased format."""
     if not category:

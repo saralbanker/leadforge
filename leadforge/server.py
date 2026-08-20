@@ -1125,10 +1125,15 @@ async def generate_draft(req: GenerateDraftRequest):
             )
 
         # 4. Ollama Hook Generation
+        # Maps listings keyword-stuff their titles (one is 125 chars). Using that
+        # verbatim reads as bulk mail in a subject line, and derails the model.
+        from leadforge.normalizer import clean_business_name
+        display_name = clean_business_name(business_name) or business_name or ""
+
         generator = OllamaHookGenerator()
         hook, hook_source = await asyncio.to_thread(
             generator.generate_hook_with_source,
-            business_name=business_name,
+            business_name=display_name,
             review_count=review_count,
             rating=rating,
             city=city,
@@ -1154,7 +1159,8 @@ async def generate_draft(req: GenerateDraftRequest):
 
         area_val = opp["area"] if "area" in opp.keys() and opp["area"] else ""
         template_vars = collections.defaultdict(str, {
-            "business_name": business_name or "",
+            "business_name": display_name,
+            "business_name_full": business_name or "",
             "city": city or "",
             "category": category or "",
             "area": area_val or "",

@@ -171,3 +171,45 @@ def test_migration_adds_the_columns_and_settings(tmp_path, monkeypatch):
 def test_quality_issues_round_trip_as_json():
     issues = ["Spam indicators detected: ['free']", "Contains link or URL in body text."]
     assert json.loads(json.dumps(issues)) == issues
+
+
+# --------------------------------------------------------------------------
+# Business-name cleaning
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("raw,expected", [
+    ("Noble Brothers | Tarpaulin Manufacturer in Ahmedabad", "Noble Brothers"),
+    ("Allied Valves (Knife Edge Gate Valve|Ball Valve)", "Allied Valves"),
+    ("DWARKESH INDUSTRIES |Cassia Tora Seeds | Splits", "DWARKESH INDUSTRIES"),
+    ("Krish Plastic Industries - Engineering Plastic Manufacturer", "Krish Plastic Industries"),
+    # Already clean — must pass through untouched.
+    ("Anar Rub Tech Private Limited", "Anar Rub Tech Private Limited"),
+    ("Mazda Limited", "Mazda Limited"),
+])
+def test_clean_business_name(raw, expected):
+    from leadforge.normalizer import clean_business_name
+    assert clean_business_name(raw) == expected
+
+
+def test_clean_business_name_strips_invisible_characters():
+    from leadforge.normalizer import clean_business_name
+    assert "​" not in clean_business_name("ADORN AESTHETICS​ - Best Hair Transplant")
+
+
+def test_clean_business_name_never_ends_on_a_conjunction():
+    from leadforge.normalizer import clean_business_name
+    out = clean_business_name(
+        "Elite Plastic Surgery Clinic & Multispeciality - Plastic Surgeon in Ahmedabad"
+    )
+    assert not out.rstrip().endswith(("&", "and", "-", ","))
+
+
+def test_clean_business_name_caps_length():
+    from leadforge.normalizer import clean_business_name
+    assert len(clean_business_name("A" * 200)) <= 42
+
+
+@pytest.mark.parametrize("blank", ["", None])
+def test_clean_business_name_handles_blank(blank):
+    from leadforge.normalizer import clean_business_name
+    assert clean_business_name(blank) == ""
