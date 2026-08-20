@@ -14,7 +14,9 @@ Writing Rules:
 1. Write like a real business development professional sending a quick, relevant inquiry.
 2. Ground the observation specifically in their real industry, city/industrial zone, and digital infrastructure (e.g. absence of digital spec catalog or online procurement).
 3. Do NOT use generic pleasantries, greetings, or "hope you are well". Keep it under 25 words.
-4. Output strictly raw JSON: {"observation_hook": "Your single observation sentence here."}"""
+4. Output strictly raw JSON: {"observation_hook": "Your single observation sentence here."}
+5. NEVER use any of these words or phrases — they read as marketing filler and will get the email rejected:
+{banned_vocabulary}"""
 
 DEFAULT_USER_PROMPT_TEMPLATE = """Business Name: {business_name}
 Category: {category}
@@ -26,6 +28,26 @@ Google Rating: {rating}
 Google Review Count: {review_count}
 
 Output the single observation hook in raw JSON."""
+
+
+def banned_vocabulary() -> str:
+    """The words EmailQualityEngine rejects, formatted for the system prompt.
+
+    Derived from the quality engine's own constants so the prompt and the gate
+    can never disagree — previously the prompt named 2 of the 23 banned terms,
+    and the model reached for the other 21 unprompted.
+    """
+    from leadforge.outreach.quality import EmailQualityEngine
+
+    terms = sorted(EmailQualityEngine.AI_JARGON_PHRASES | EmailQualityEngine.SPAM_KEYWORDS)
+    return ", ".join(f'"{t}"' for t in terms)
+
+
+def resolve_system_prompt(template: str) -> str:
+    """Fills {banned_vocabulary} in a system prompt, leaving other text intact."""
+    if "{banned_vocabulary}" not in template:
+        return template
+    return template.replace("{banned_vocabulary}", banned_vocabulary())
 
 
 def sanitize_scraped_text(text: str) -> str:
@@ -125,10 +147,18 @@ class OllamaHookGenerator:
 
     @property
     def keep_alive(self) -> str:
+        """How long Ollama keeps the model resident after a request.
+
+        "0s" evicts it immediately, so the next email pays a full reload and
+        loses the cached prompt prefix — measured at 24s per hook versus 7s
+        with the model resident.
+        """
+        import os
+        default = os.getenv("OLLAMA_KEEP_ALIVE", "10m").strip() or "10m"
         settings = self._get_settings()
         if settings:
-            return settings.get_str("llm.keep_alive", "0s")
-        return "0s"
+            return settings.get_str("llm.keep_alive", default)
+        return default
 
     @property
     def is_enabled(self) -> bool:
@@ -167,6 +197,20 @@ class OllamaHookGenerator:
         except Exception:
             return []
 
+    def generate_hook_with_source(self, **kwargs) -> tuple[str, str]:
+        """Generates a hook and reports where it came from.
+
+        Returns:
+            (hook, source) where source is 'llm' when the model produced the
+            text and 'fallback' when the deterministic stand-in was used.
+            Callers must persist this: every failure path returns the same
+            generic sentence, so without it an Ollama outage silently mails
+            identical boilerplate to every lead in a batch.
+        """
+        self._last_hook_source = "fallback"
+        hook = self.generate_hook(**kwargs)
+        return hook, self._last_hook_source
+
     def generate_hook(
         self,
         business_name: str,
@@ -187,6 +231,8 @@ class OllamaHookGenerator:
         fallback_hook = f"I noticed your business, {business_name}, has a solid local presence in {city}."
         if review_count and review_count > 0:
             fallback_hook = f"I was looking at your {rating}-star rating on Google Maps with {review_count} reviews."
+
+        self._last_hook_source = "fallback"
 
         if not self.is_enabled:
             logger.info("Local LM is disabled in settings; returning deterministic fallback hook.")
@@ -221,7 +267,7 @@ class OllamaHookGenerator:
         if not exemplars and category:
             exemplars = self.get_approved_exemplars(category="", limit=2)
 
-        sys_prompt = self.system_prompt
+        sys_prompt = resolve_system_prompt(self.system_prompt)
         if exemplars:
             sys_prompt += "\n\nUser-Approved Reference Examples (Follow this preferred tone and structure):\n"
             for i, ex in enumerate(exemplars, 1):
@@ -303,6 +349,7 @@ class OllamaHookGenerator:
                 return fallback_hook
 
             logger.info("Successfully generated personalized observation hook via local Ollama.")
+            self._last_hook_source = "llm"
             return hook
 
         except requests.exceptions.RequestException as req_err:

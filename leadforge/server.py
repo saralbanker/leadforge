@@ -1126,8 +1126,8 @@ async def generate_draft(req: GenerateDraftRequest):
 
         # 4. Ollama Hook Generation
         generator = OllamaHookGenerator()
-        hook = await asyncio.to_thread(
-            generator.generate_hook,
+        hook, hook_source = await asyncio.to_thread(
+            generator.generate_hook_with_source,
             business_name=business_name,
             review_count=review_count,
             rating=rating,
@@ -1183,10 +1183,14 @@ async def generate_draft(req: GenerateDraftRequest):
             cursor.execute(
                 """
                 UPDATE email_drafts
-                SET campaign_name = ?, recipient_email = ?, subject = ?, body = ?, status = 'PENDING_APPROVAL', error_message = NULL, updated_at = ?
+                SET campaign_name = ?, recipient_email = ?, subject = ?, body = ?, status = 'PENDING_APPROVAL',
+                    error_message = NULL, quality_score = ?, quality_passed = ?, quality_issues = ?,
+                    hook_source = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (campaign_name, recipient_email, subject, body, now_str, draft_id),
+                (campaign_name, recipient_email, subject, body,
+                 quality["quality_score"], 1 if quality["passed"] else 0,
+                 json.dumps(quality["issues"]), hook_source, now_str, draft_id),
             )
             append_event(
                 event_type="EMAIL_DRAFT_REGENERATED",
@@ -1204,10 +1208,13 @@ async def generate_draft(req: GenerateDraftRequest):
             draft_id = str(uuid.uuid4())
             cursor.execute(
                 """
-                INSERT INTO email_drafts (id, opportunity_id, campaign_name, recipient_email, subject, body, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'PENDING_APPROVAL', ?, ?)
+                INSERT INTO email_drafts (id, opportunity_id, campaign_name, recipient_email, subject, body, status,
+                                          quality_score, quality_passed, quality_issues, hook_source, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'PENDING_APPROVAL', ?, ?, ?, ?, ?, ?)
                 """,
-                (draft_id, opportunity_id, campaign_name, recipient_email, subject, body, now_str, now_str),
+                (draft_id, opportunity_id, campaign_name, recipient_email, subject, body,
+                 quality["quality_score"], 1 if quality["passed"] else 0,
+                 json.dumps(quality["issues"]), hook_source, now_str, now_str),
             )
             append_event(
                 event_type="EMAIL_DRAFT_GENERATED",
@@ -1236,6 +1243,7 @@ async def generate_draft(req: GenerateDraftRequest):
             "quality_score": quality["quality_score"],
             "quality_passed": quality["passed"],
             "quality_issues": quality["issues"],
+            "hook_source": hook_source,
         }
     except HTTPException:
         raise
@@ -1425,20 +1433,61 @@ async def bulk_approve_drafts(req: Optional[BulkApproveRequest] = None):
         cursor = conn.cursor()
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+        # Bulk approval is the automation path, so it enforces the quality
+        # verdict that single approval leaves to human judgement.
+        from leadforge.repositories.settings import SettingsCache
+        settings_cache = SettingsCache()
+        min_score = settings_cache.get_int("outreach.min_quality_score", 80)
+        require_llm = settings_cache.get_str("outreach.require_llm_hook", "true").lower() in ("true", "1", "yes")
+
+        cols = "id, quality_score, quality_passed, quality_issues, hook_source"
         if req and req.draft_ids:
             placeholders = ",".join(["?"] * len(req.draft_ids))
             cursor.execute(
-                f"SELECT id FROM email_drafts WHERE status = 'PENDING_APPROVAL' AND id IN ({placeholders})",
+                f"SELECT {cols} FROM email_drafts WHERE status = 'PENDING_APPROVAL' AND id IN ({placeholders})",
                 req.draft_ids,
             )
         else:
-            cursor.execute("SELECT id FROM email_drafts WHERE status = 'PENDING_APPROVAL'")
+            cursor.execute(f"SELECT {cols} FROM email_drafts WHERE status = 'PENDING_APPROVAL'")
 
         rows = cursor.fetchall()
         approved_count = 0
+        skipped = []
 
         for row in rows:
             draft_id = row["id"]
+            score = row["quality_score"]
+            reason = None
+
+            if score is None:
+                reason = "no quality score recorded — regenerate this draft before approving"
+            elif score < min_score:
+                issues = row["quality_issues"]
+                reason = f"quality score {score} is below the minimum of {min_score}"
+                if issues:
+                    try:
+                        parsed = json.loads(issues)
+                        if parsed:
+                            reason += f" ({'; '.join(parsed)})"
+                    except (ValueError, TypeError):
+                        pass
+            elif require_llm and row["hook_source"] == "fallback":
+                reason = (
+                    "the opening line is the deterministic fallback, not model output — "
+                    "the language model was unavailable when this draft was generated"
+                )
+
+            if reason:
+                skipped.append({"draft_id": draft_id, "reason": reason})
+                append_event(
+                    event_type="EMAIL_APPROVAL_BLOCKED",
+                    entity_type="EmailDraft",
+                    entity_id=draft_id,
+                    payload={"reason": reason, "quality_score": score, "hook_source": row["hook_source"]},
+                    conn=conn,
+                )
+                continue
+
             cursor.execute(
                 "UPDATE email_drafts SET status = 'APPROVED', updated_at = ? WHERE id = ?",
                 (now_str, draft_id),
@@ -1447,13 +1496,21 @@ async def bulk_approve_drafts(req: Optional[BulkApproveRequest] = None):
                 event_type="EMAIL_APPROVED",
                 entity_type="EmailDraft",
                 entity_id=draft_id,
-                payload={"status": "APPROVED", "bulk": True},
+                payload={"status": "APPROVED", "bulk": True, "quality_score": score},
                 conn=conn,
             )
             approved_count += 1
 
         conn.commit()
-        return {"message": f"Successfully approved {approved_count} drafts.", "approved_count": approved_count}
+        msg = f"Approved {approved_count} draft(s)."
+        if skipped:
+            msg += f" Held back {len(skipped)} that did not meet the quality bar."
+        return {
+            "message": msg,
+            "approved_count": approved_count,
+            "skipped_count": len(skipped),
+            "skipped": skipped,
+        }
     except Exception as e:
         logger.error(f"Error bulk approving drafts: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
