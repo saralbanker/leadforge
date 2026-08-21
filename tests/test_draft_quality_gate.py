@@ -41,9 +41,12 @@ def test_banned_vocabulary_tracks_the_quality_engine(monkeypatch):
     assert "synergize" in banned_vocabulary()
 
 
-def test_resolve_leaves_a_custom_prompt_without_the_placeholder_alone():
+def test_a_custom_prompt_keeps_its_own_wording():
+    """The operator's prompt must survive intact — the guard is appended, not merged."""
     custom = "Write one sentence. Output JSON."
-    assert resolve_system_prompt(custom) == custom
+    out = resolve_system_prompt(custom)
+    assert out.startswith(custom)
+    assert "streamline" in out
 
 
 # --------------------------------------------------------------------------
@@ -213,3 +216,107 @@ def test_clean_business_name_caps_length():
 def test_clean_business_name_handles_blank(blank):
     from leadforge.normalizer import clean_business_name
     assert clean_business_name(blank) == ""
+
+
+# --------------------------------------------------------------------------
+# Repetition detection
+# --------------------------------------------------------------------------
+
+CLONES = [
+    "Aavad Instrument still takes orders over phone, so mistakes must slip through.",
+    "Allied Valves still takes orders over phone, so mistakes must slip through.",
+    "Anar Rub Tech still takes orders over a contact form, so mistakes must slip through.",
+]
+
+VARIED = [
+    "Aavad Instrument has no dealer login, so repeat buyers must call in.",
+    "Your Odhav unit shows 27 reviews but no product spec sheets online.",
+    "Rajsagar lists 40 pipe grades on paper but none are searchable.",
+]
+
+
+def test_a_cloned_opening_is_blocked():
+    result = EmailQualityEngine.score_draft(CLONES[1], previous_bodies=[CLONES[0]])
+    assert result["passed"] is False
+    assert any("identical to a recent draft" in i for i in result["issues"])
+
+
+def test_the_first_draft_has_nothing_to_repeat():
+    assert EmailQualityEngine.score_draft(CLONES[0], previous_bodies=[])["passed"] is True
+
+
+def test_distinct_openings_all_pass():
+    seen = []
+    for hook in VARIED:
+        assert EmailQualityEngine.score_draft(hook, previous_bodies=seen)["passed"] is True
+        seen.append(hook)
+
+
+def test_repetition_is_detected_despite_differing_business_names():
+    """The name legitimately varies and can dominate a whole-string compare."""
+    a = "X Ltd still takes orders over phone, so mistakes must slip through."
+    b = ("A Very Much Longer Business Name Private Limited still takes orders "
+         "over phone, so mistakes must slip through.")
+    assert EmailQualityEngine.find_similar(b, [a]) is not None
+
+
+def test_repetition_costs_more_than_a_single_style_issue():
+    """Repetition scales across a batch, so it outweighs one cliché."""
+    style_only = EmailQualityEngine.score_draft("We streamline your workflow today.")
+    repeated = EmailQualityEngine.score_draft(CLONES[1], previous_bodies=[CLONES[0]])
+    assert repeated["quality_score"] < style_only["quality_score"]
+
+
+def test_scoring_without_history_is_unchanged():
+    """Existing callers that pass no history keep their previous behaviour."""
+    assert EmailQualityEngine.score_draft(VARIED[0])["quality_score"] == 100
+
+
+# --------------------------------------------------------------------------
+# Exemplars require evidence
+# --------------------------------------------------------------------------
+
+def test_a_sent_draft_without_a_reply_is_not_an_exemplar(tmp_path, monkeypatch):
+    """Selecting on APPROVED/SENT taught the model from two bounced emails.
+
+    A draft reaching SENT means someone clicked approve, not that the copy
+    worked. Only an inbound reply proves a human read it.
+    """
+    db = tmp_path / "ex.db"
+    monkeypatch.setenv("LEADFORGE_SKIP_BOOTSTRAP", "1")
+    monkeypatch.setenv("LEADFORGE_DB_PATH", str(db))
+
+    import leadforge.database as database
+    monkeypatch.setattr(database, "DB_PATH", db)
+    database.initialize_database()
+
+    conn = sqlite3.connect(db)
+    conn.executescript("""
+        INSERT INTO businesses (id, normalized_name, name)
+        VALUES ('b0000000-0000-4000-8000-000000000001', 'acme', 'Acme Steel');
+        INSERT INTO opportunities (id, business_id, title, pipeline_stage)
+        VALUES ('o0000000-0000-4000-8000-000000000001',
+                'b0000000-0000-4000-8000-000000000001', 'Acme', 'PROSPECTING');
+        INSERT INTO email_drafts (id, opportunity_id, campaign_name, recipient_email,
+                                  subject, body, status)
+        VALUES ('d0000000-0000-4000-8000-000000000001',
+                'o0000000-0000-4000-8000-000000000001', 'C', 'a@acme.in',
+                'subj', 'Acme Steel has no website, so buyers cannot find you.', 'SENT');
+    """)
+    conn.commit()
+    conn.close()
+
+    assert OllamaHookGenerator.get_approved_exemplars(limit=5) == [], (
+        "a SENT draft with no inbound reply must not be used as an exemplar"
+    )
+
+
+def test_exemplars_are_empty_when_nothing_has_earned_a_reply():
+    """With no replies recorded, the model writes from the prompt alone."""
+    assert OllamaHookGenerator.get_approved_exemplars(limit=5) == []
+
+
+def test_banned_list_is_appended_to_a_custom_prompt():
+    """A custom prompt has no placeholder, and previously lost the guard."""
+    out = resolve_system_prompt("You write cold emails. One sentence only.")
+    assert "streamline" in out and "leverage" in out

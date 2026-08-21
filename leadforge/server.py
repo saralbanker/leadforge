@@ -1180,7 +1180,19 @@ async def generate_draft(req: GenerateDraftRequest):
             body = body + footer
 
         # 6. Quality Scoring (evaluated on email body)
-        quality = EmailQualityEngine.score_draft(body)
+        #    Recent drafts are passed in so the engine can catch a batch of
+        #    near-identical openings — the failure that only shows up at scale.
+        cursor.execute(
+            """
+            SELECT body FROM email_drafts
+            WHERE status IN ('PENDING_APPROVAL', 'APPROVED', 'QUEUED', 'SENT')
+              AND (? IS NULL OR id != ?)
+            ORDER BY updated_at DESC LIMIT 25
+            """,
+            (existing_draft_id, existing_draft_id),
+        )
+        recent_bodies = [r["body"] for r in cursor.fetchall()]
+        quality = EmailQualityEngine.score_draft(body, previous_bodies=recent_bodies)
 
         # 7. Store draft
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

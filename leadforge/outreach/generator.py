@@ -44,10 +44,22 @@ def banned_vocabulary() -> str:
 
 
 def resolve_system_prompt(template: str) -> str:
-    """Fills {banned_vocabulary} in a system prompt, leaving other text intact."""
-    if "{banned_vocabulary}" not in template:
+    """Ensures the quality gate's banned vocabulary reaches the model.
+
+    Substitutes {banned_vocabulary} where the prompt provides the placeholder.
+    A custom prompt configured in settings normally will not, so the list is
+    appended instead — otherwise operators who tune their own prompt silently
+    lose the guard and the gate rejects copy the model was never warned about.
+    """
+    if not template:
         return template
-    return template.replace("{banned_vocabulary}", banned_vocabulary())
+    if "{banned_vocabulary}" in template:
+        return template.replace("{banned_vocabulary}", banned_vocabulary())
+    return (
+        template.rstrip()
+        + "\n\nNever use these words or phrases — they will get the email rejected:\n"
+        + banned_vocabulary()
+    )
 
 
 def sanitize_scraped_text(text: str) -> str:
@@ -169,19 +181,37 @@ class OllamaHookGenerator:
 
     @staticmethod
     def get_approved_exemplars(category: str = "", limit: int = 2) -> List[Dict[str, str]]:
-        """Retrieves recently accepted/approved email drafts to use as in-context learning references."""
+        """Returns past drafts that earned a reply, for in-context learning.
+
+        Previously this selected on status IN ('APPROVED', 'SENT') — i.e. that
+        someone clicked approve. That is not evidence the copy worked. The only
+        two qualifying drafts had been sent to fabricated addresses and hard
+        bounced, and the model dutifully cloned their sentence structure into
+        every subsequent hook.
+
+        A reply is the one signal that a human read the email and responded, so
+        that is what qualifies now. With no replies recorded, this returns
+        nothing and the model writes from the prompt alone.
+        """
         try:
             from leadforge.database import get_db_connection
             conn = get_db_connection()
             cursor = conn.cursor()
             query = """
-                SELECT ed.subject, ed.body, b.name as business_name, bt.name as category, a.city, a.area
+                SELECT ed.subject, ed.body, b.name as business_name,
+                       bt.name as category, a.city, a.area
                 FROM email_drafts ed
                 JOIN opportunities o ON ed.opportunity_id = o.id
                 JOIN businesses b ON o.business_id = b.id
                 LEFT JOIN business_types bt ON b.business_type_id = bt.id
                 LEFT JOIN addresses a ON b.id = a.business_id
-                WHERE ed.status IN ('APPROVED', 'SENT')
+                WHERE ed.status = 'SENT'
+                  AND ed.error_message IS NULL
+                  AND EXISTS (
+                      SELECT 1 FROM communication_threads ct
+                      JOIN communication_messages cm ON cm.thread_id = ct.id
+                      WHERE ct.business_id = b.id AND cm.direction = 'INBOUND'
+                  )
             """
             params = []
             if category:
@@ -194,7 +224,8 @@ class OllamaHookGenerator:
             rows = cursor.fetchall()
             conn.close()
             return [dict(r) for r in rows]
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"[Generator] Exemplar lookup failed: {exc}")
             return []
 
     def generate_hook_with_source(self, **kwargs) -> tuple[str, str]:
