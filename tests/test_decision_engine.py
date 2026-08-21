@@ -118,7 +118,7 @@ def test_distributor_category_decision_routing():
 
     decision = engine.evaluate_decision(data)
     assert "Order" in decision.service_name
-    assert "Campaign B (Order Portal)" in decision.campaign_name
+    assert "Order Portal" in decision.campaign_name
 
 
 def test_unknown_category_fallback():

@@ -70,10 +70,18 @@ class CampaignRouter:
                 continue
 
             # 4. Check category list criteria
+            # Uses substring containment (with simple plural stemming) rather than an
+            # exact match, since scraped categories vary in wording (e.g. "Dental
+            # Clinic" vs the configured "Dentists"/"Clinics").
             req_categories = criteria.get("categories")
             if req_categories is not None:
                 allowed_cats = [str(c).strip().lower() for c in req_categories]
-                if category_clean not in allowed_cats:
+                if not any(
+                    cat in category_clean
+                    or category_clean in cat
+                    or cat.rstrip("s") in category_clean
+                    for cat in allowed_cats
+                ):
                     continue
 
             # All conditions met, return matched campaign config

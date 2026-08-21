@@ -273,10 +273,10 @@ class EntityStateMachine:
 
     TRANSITION_MAPS: Dict[str, Dict[str, List[str]]] = {
         "Business": {
-            "DISCOVERED": ["AUDITED", "QUALIFIED", "UNQUALIFIED", "ARCHIVED"],
-            "AUDITED": ["QUALIFIED", "UNQUALIFIED", "ARCHIVED"],
-            "QUALIFIED": ["OUTREACH_DRAFTED", "OUTREACH_SENT", "UNQUALIFIED", "ARCHIVED"],
-            "UNQUALIFIED": ["ARCHIVED"],
+            "DISCOVERED": ["AUDITED", "QUALIFIED", "DISQUALIFIED", "ARCHIVED"],
+            "AUDITED": ["QUALIFIED", "DISQUALIFIED", "ARCHIVED"],
+            "QUALIFIED": ["OUTREACH_DRAFTED", "OUTREACH_SENT", "DISQUALIFIED", "ARCHIVED"],
+            "DISQUALIFIED": ["ARCHIVED"],
             "OUTREACH_DRAFTED": ["OUTREACH_SENT", "ARCHIVED"],
             "OUTREACH_SENT": ["CONVERTED", "REJECTED", "UNSUBSCRIBED", "ARCHIVED"],
             "CONVERTED": ["ARCHIVED"],
@@ -284,16 +284,18 @@ class EntityStateMachine:
             "UNSUBSCRIBED": ["ARCHIVED"],
             "ARCHIVED": [],  # Terminal
         },
+        # Mirrors the `opportunities.pipeline_stage` CHECK constraint in schema.sql.
         "Opportunity": {
-            "OPEN": ["IN_PROGRESS", "QUALIFIED", "UNQUALIFIED"],
-            "IN_PROGRESS": ["QUALIFIED", "UNQUALIFIED", "CLOSED_WON", "CLOSED_LOST"],
-            "QUALIFIED": ["CLOSED_WON", "CLOSED_LOST"],
-            "UNQUALIFIED": ["CLOSED_LOST"],
+            "PROSPECTING": ["QUALIFICATION", "CLOSED_LOST"],
+            "QUALIFICATION": ["PROPOSAL_SENT", "CLOSED_LOST"],
+            "PROPOSAL_SENT": ["NEGOTIATION", "CLOSED_LOST"],
+            "NEGOTIATION": ["CLOSED_WON", "CLOSED_LOST"],
             "CLOSED_WON": [],  # Terminal
             "CLOSED_LOST": [],  # Terminal
         },
+        # Mirrors the `lead_statuses.category` CHECK constraint in schema.sql.
         "Lead": {
-            "NEW": ["CONTACTED", "QUALIFIED", "UNQUALIFIED"],
+            "OPEN": ["CONTACTED", "UNQUALIFIED"],
             "CONTACTED": ["QUALIFIED", "UNQUALIFIED", "LOST"],
             "QUALIFIED": ["LOST"],
             "UNQUALIFIED": [],  # Terminal
@@ -337,10 +339,14 @@ class EntityStateMachine:
         current_state: str,
         next_state: str,
         triggering_event: Optional[str] = None,
-    ) -> None:
-        """Validates that a transition from current_state to next_state is legal."""
+    ) -> bool:
+        """Validates that a transition from current_state to next_state is legal.
+
+        Returns True on success (including no-op same-state transitions);
+        raises InvalidTransitionError otherwise.
+        """
         if current_state == next_state:
-            return  # No-op transition is allowed
+            return True  # No-op transition is allowed
 
         entity_map = cls.TRANSITION_MAPS.get(entity_type)
         if not entity_map:
@@ -355,6 +361,8 @@ class EntityStateMachine:
                 f"Invalid transition for {entity_type}: '{current_state}' -> '{next_state}'. "
                 f"Allowed transitions from '{current_state}': {allowed_next}"
             )
+
+        return True
 
     @classmethod
     def is_terminal(cls, entity_type: str, state: str) -> bool:

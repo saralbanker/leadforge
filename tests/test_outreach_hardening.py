@@ -77,7 +77,7 @@ def test_ph002_daily_send_safety_limit():
             (biz_id,),
         )
         cursor.execute(
-            "INSERT INTO opportunities (id, business_id, score, pipeline_stage) VALUES (?, ?, 75.0, 'QUALIFIED')",
+            "INSERT INTO opportunities (id, business_id, title, score, pipeline_stage) VALUES (?, ?, 'Test Opportunity', 75.0, 'QUALIFICATION')",
             (opp_id, biz_id),
         )
         conn.commit()

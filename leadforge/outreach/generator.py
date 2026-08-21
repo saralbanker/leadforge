@@ -124,8 +124,8 @@ class OllamaHookGenerator:
     def max_tokens(self) -> int:
         settings = self._get_settings()
         if settings:
-            return settings.get_int("llm.max_tokens", 35)
-        return 35
+            return settings.get_int("llm.max_tokens", 150)
+        return 150
 
     @property
     def is_enabled(self) -> bool:
@@ -237,10 +237,10 @@ class OllamaHookGenerator:
                 elif isinstance(parsed, str):
                     hook = parsed.strip()
             except Exception:
-                # If model returned plain text instead of JSON
-                clean_raw = raw_response.strip().strip('"').strip("'")
-                if clean_raw and not clean_raw.startswith("{") and len(clean_raw) < 300:
-                    hook = clean_raw
+                # Ollama was explicitly asked for format="json"; a response that
+                # still fails to parse is malformed, not a valid plain-text hook.
+                # Leave hook empty so the deterministic fallback below is used.
+                pass
 
             if not hook:
                 logger.warning("Parsed Ollama response has empty hook. Using fallback.")
