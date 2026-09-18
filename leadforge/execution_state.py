@@ -285,6 +285,7 @@ class EntityStateMachine:
             "UNSUBSCRIBED": ["ARCHIVED"],
             "ARCHIVED": [],  # Terminal
         },
+        # Mirrors the `opportunities.pipeline_stage` CHECK constraint in schema.sql.
         "Opportunity": {
             "PROSPECTING": ["QUALIFICATION", "CLOSED_LOST"],
             "QUALIFICATION": ["PROPOSAL_SENT", "CLOSED_LOST"],
@@ -297,6 +298,7 @@ class EntityStateMachine:
             "CLOSED_WON": [],  # Terminal
             "CLOSED_LOST": [],  # Terminal
         },
+        # Mirrors the `lead_statuses.category` CHECK constraint in schema.sql.
         "Lead": {
             "OPEN": ["CONTACTED", "UNQUALIFIED"],
             "NEW": ["CONTACTED", "QUALIFIED", "UNQUALIFIED"],
@@ -344,7 +346,11 @@ class EntityStateMachine:
         next_state: str,
         triggering_event: Optional[str] = None,
     ) -> bool:
-        """Validates that a transition from current_state to next_state is legal."""
+        """Validates that a transition from current_state to next_state is legal.
+
+        Returns True on success (including no-op same-state transitions);
+        raises InvalidTransitionError otherwise.
+        """
         if current_state == next_state:
             return True  # No-op transition is allowed
 
@@ -361,6 +367,8 @@ class EntityStateMachine:
                 f"Invalid transition for {entity_type}: '{current_state}' -> '{next_state}'. "
                 f"Allowed transitions from '{current_state}': {allowed_next}"
             )
+        return True
+
         return True
 
     @classmethod
