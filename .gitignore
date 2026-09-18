@@ -36,6 +36,9 @@ leadforge.db-shm
 leadforge.db-wal
 *.backup
 *.backup_*
+*.bak
 *.log
+*.db-shm
+*.db-wal
 indiamart_sample.html
 

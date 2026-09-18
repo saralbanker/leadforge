@@ -268,6 +268,7 @@ def report() -> None:
     from leadforge.database import get_db_connection
     from leadforge.repositories.settings import SettingsCache
     from leadforge.outreach.ramp import delivery_allowance
+    from leadforge.repositories.whatsapp_reporting import get_whatsapp_summary
     conn = get_db_connection()
     biz, emails = conn.execute(
         "SELECT COUNT(*), COUNT(NULLIF(contact_email,'')) FROM businesses "
@@ -280,6 +281,13 @@ def report() -> None:
     conn.close()
     log("report", f"businesses={biz} emailable={emails} drafts={rows} replies={replies}")
     log("report", f"allowance: {reason}")
+    wa = get_whatsapp_summary()
+    if wa:
+        log(
+            "report",
+            f"whatsapp: total={wa['total_contacts']} pending={wa['pending']} "
+            f"sent_today={wa['sent_today']} total_sent={wa['total_sent']} replies={wa['replied']}"
+        )
 
 
 def main() -> int:

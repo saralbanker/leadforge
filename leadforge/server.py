@@ -841,18 +841,36 @@ async def get_outreach_metrics():
         settings_cache = SettingsCache()
         daily_limit = settings_cache.get_int("outreach.daily_send_limit", 20)
 
+        from leadforge.repositories.whatsapp_reporting import get_whatsapp_summary
+        wa_summary = get_whatsapp_summary()
+
         return {
             "sent_today": sent_today,
             "failed_today": failed_today,
             "approved_waiting": approved_waiting,
             "pending_approval": pending_approval,
             "daily_send_limit": daily_limit,
+            "whatsapp": wa_summary,
         }
     except Exception as e:
         logger.error(f"Error fetching outreach metrics: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
+
+
+@app.get("/api/whatsapp/metrics")
+async def get_whatsapp_metrics():
+    """Returns real-time WhatsApp outreach metrics (read-only from whatsapp_outreach.db)."""
+    from leadforge.repositories.whatsapp_reporting import get_whatsapp_summary
+
+    summary = get_whatsapp_summary()
+    if summary is None:
+        return {
+            "status": "unavailable",
+            "message": "WhatsApp outreach database not configured",
+        }
+    return {"status": "active", **summary}
 
 
 class GenerateDraftRequest(BaseModel):
