@@ -1,8 +1,7 @@
 import os
-import sqlite3
 import tempfile
 import pytest
-from leadforge.decision_engine import DecisionEngine, DecisionObject
+from leadforge.decision_engine import DecisionEngine
 
 
 @pytest.fixture(autouse=True)

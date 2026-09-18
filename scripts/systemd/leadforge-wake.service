@@ -1,0 +1,10 @@
+[Unit]
+Description=LeadForge RTC wake alarm (wakes the machine; runs no work itself)
+
+[Service]
+Type=oneshot
+# Deliberately does nothing. Its only purpose is to be the unit that
+# leadforge-wake.timer activates, so the timer can hold an RTC alarm.
+# The actual outreach run stays in the *user* timer, which the Email Outreach
+# page can edit without root.
+ExecStart=/bin/true

@@ -1,5 +1,4 @@
 import os
-import sqlite3
 import tempfile
 import pytest
 from leadforge.repositories.knowledge import SQLiteKnowledgeRepository

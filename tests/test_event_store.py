@@ -3,7 +3,6 @@ import sqlite3
 import tempfile
 import pytest
 from leadforge.database import (
-    initialize_database,
     append_event,
     uuidv7,
 )
@@ -15,7 +14,7 @@ def temp_db():
     """Provides a temporary SQLite database initialized with all schemas and migrations."""
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
-    
+
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")
@@ -27,7 +26,7 @@ def temp_db():
     if os.path.exists(schema_path):
         with open(schema_path, "r", encoding="utf-8") as f:
             conn.executescript(f.read())
-    
+
     yield conn, path
 
     conn.close()

@@ -66,6 +66,15 @@ def test_llm_reply_classifier():
     assert classifier.classify_reply("Yes, we are interested in a call!") == "POSITIVE"
     assert classifier.classify_reply("No thanks, not interested.") == "NEGATIVE"
 
+    # Verify quoted footer with 'unsubscribe' does not trigger false UNSUBSCRIBE
+    quoted_reply = (
+        "Yes. Please. Contact later.\n\n"
+        "On 16 Sep 2026, at 11:03 AM, Saral Banker wrote:\n"
+        "> should i check back with you next quarter?\n"
+        "> Reply STOP to unsubscribe.\n"
+    )
+    assert classifier.classify_reply(quoted_reply) == "POSITIVE"
+
 
 def test_opt_out_manager(temp_db):
     repo = SQLiteCommunicationRepository()

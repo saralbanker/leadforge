@@ -7,6 +7,7 @@ from leadforge.enrichment.website import WebsiteProvider
 from leadforge.enrichment.providers.indiamart import IndiaMartProvider
 from leadforge.enrichment.providers.tradeindia import TradeIndiaProvider
 from leadforge.enrichment.providers.justdial import JustdialProvider
+from leadforge.enrichment.providers.social import SocialLinkProvider
 from leadforge.enrichment.aggregator import EmailCandidateAggregator
 from leadforge.repositories.enrichment import SQLiteEnrichmentRepository
 from leadforge.utils import get_logger
@@ -21,6 +22,7 @@ def get_default_providers() -> List[BaseEnrichmentProvider]:
         IndiaMartProvider(),
         TradeIndiaProvider(),
         JustdialProvider(),
+        SocialLinkProvider(),
     ]
 
 

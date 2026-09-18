@@ -59,11 +59,26 @@ class OptOutManager:
                 (uuidv7(), clean_email, reason, now_str),
             )
 
+            # Suppress any business associated with this contact email
+            if clean_email:
+                cursor.execute(
+                    "UPDATE businesses SET is_suppressed = 1, updated_at = ? WHERE LOWER(contact_email) = ?",
+                    (now_str, clean_email),
+                )
+
             if thread_id:
                 # Cancel pending followups for this thread
                 cursor.execute(
                     "UPDATE followup_schedules SET status = 'SUPPRESSED' WHERE thread_id = ? AND status = 'PENDING'",
                     (thread_id,),
+                )
+                # Suppress business associated with this thread
+                cursor.execute(
+                    """
+                    UPDATE businesses SET is_suppressed = 1, updated_at = ?
+                    WHERE id = (SELECT business_id FROM communication_threads WHERE id = ?)
+                    """,
+                    (now_str, thread_id),
                 )
             conn.commit()
 

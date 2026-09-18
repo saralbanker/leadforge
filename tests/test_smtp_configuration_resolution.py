@@ -1,5 +1,3 @@
-import os
-import pytest
 from leadforge.config import get_smtp_config
 from leadforge.outreach.deliverer import SMTPEmailDeliverer
 from leadforge.repositories.settings import SQLiteSettingsRepository

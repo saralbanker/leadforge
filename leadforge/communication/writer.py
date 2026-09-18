@@ -58,8 +58,8 @@ class LocalLLMEmailWriter:
     def model_name(self) -> str:
         settings = self._get_settings()
         if settings:
-            return settings.get_str("llm.model_name", "llama3.1:8b")
-        return "llama3.1:8b"
+            return settings.get_str("llm.model_name", "qwen2.5:3b")
+        return "qwen2.5:3b"
 
     @property
     def sender_name(self) -> str:
@@ -121,6 +121,86 @@ class LocalLLMEmailWriter:
             logger.warning(f"[LocalLLMEmailWriter] Ollama execution failed: {e}. Using fallback copy.")
 
         return fallback_subject, fallback_body
+
+    def generate_followup_draft(
+        self,
+        context: Dict[str, Any],
+        step: int = 2,
+        campaign_name: Optional[str] = None,
+        first_subject: Optional[str] = None,
+        first_body: Optional[str] = None,
+        premise_verified: bool = True,
+    ) -> tuple[str, str]:
+        """Generates subject and email body for an automated follow-up step.
+
+        Selects templates deterministically per business and per step from campaign_routing.yaml.
+        Enforces lowercase plain-spoken tone, banned terms, shorter length, and closing question.
+
+        Returns:
+            Tuple of (subject, body_text)
+        """
+        biz_id = context.get("business_id") or context.get("id", "")
+        biz_name = context.get("name", "there")
+        city = context.get("city", "your city")
+        area = context.get("area", "")
+
+        from leadforge.outreach.router import CampaignRouter
+        router = CampaignRouter()
+
+        matched_campaign = None
+        if campaign_name:
+            for camp in router.campaigns:
+                if camp.get("name") == campaign_name:
+                    matched_campaign = camp
+                    break
+
+        if not matched_campaign:
+            # Fallback: route based on available context
+            has_website = bool(context.get("website_domain"))
+            category = context.get("category", "")
+            matched_campaign = router.route_lead(
+                category=category,
+                has_website=has_website,
+                ssl_valid=context.get("ssl_valid", True),
+                audit_data=context,
+            )
+
+        if matched_campaign and "copy_template" in matched_campaign:
+            copy_tmpl = matched_campaign["copy_template"]
+            pv = premise_verified if premise_verified is not None else matched_campaign.get("premise_verified", True)
+            subject_tmpl = router.select_followup_subject(copy_tmpl, step=step, business_id=biz_id, first_subject=first_subject)
+            body_tmpl = router.select_followup_body(copy_tmpl, step=step, business_id=biz_id, premise_verified=pv)
+        else:
+            # Fallback when no campaign matched
+            if first_subject:
+                subject_tmpl = f"Re: {first_subject}"
+            else:
+                subject_tmpl = f"Follow-up: regarding {biz_name}"
+            if step >= 3:
+                body_tmpl = "if this is not a priority for {business_name} right now, no problem at all.\n\nshould i check back with you in a few months?"
+            else:
+                body_tmpl = "wanted to see if you had a moment to consider our note regarding {business_name}.\n\nwould you be open to a short 5-minute chat this week?"
+
+        if first_subject:
+            subject = subject_tmpl.replace("{business_name}", biz_name).replace("{city}", city).replace("{area}", area).replace("{first_subject}", first_subject).replace("{subject}", first_subject).strip()
+        else:
+            # When no previous subject is recorded on thread, format with clean Follow-up subject
+            clean_tmpl = subject_tmpl.replace("{first_subject}", f"regarding {biz_name}").replace("{subject}", f"regarding {biz_name}")
+            subject = clean_tmpl.replace("{business_name}", biz_name).replace("{city}", city).replace("{area}", area).strip()
+            if not subject.lower().startswith("follow-up"):
+                subject = f"Follow-up: {subject}"
+
+        if subject.lower().startswith("follow-up") and not subject.startswith("Follow-up"):
+            subject = "Follow-up" + subject[9:]
+
+        body = body_tmpl.replace("{business_name}", biz_name).replace("{city}", city).replace("{area}", area).strip()
+
+        settings = self._get_settings()
+        if settings:
+            from leadforge.outreach.generator import compile_compliance_footer
+            body = f"{body}{compile_compliance_footer(settings)}"
+
+        return subject, body
 
     def generate_reply_draft(self, context: Dict[str, Any], inbound_body: str) -> tuple[str, str]:
         """Generates a reply draft to an incoming email from a prospect.

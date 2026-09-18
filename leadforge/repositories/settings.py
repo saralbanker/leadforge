@@ -25,10 +25,9 @@ class SQLiteSettingsRepository(SettingsRepositoryInterface):
             row = cursor.fetchone()
 
             if row:
-                setting_id = row[0]
                 cursor.execute(
-                    "UPDATE settings SET value = ?, description = COALESCE(?, description) WHERE id = ?",
-                    (value, description, setting_id),
+                    "UPDATE settings SET value = ?, description = COALESCE(?, description) WHERE key = ?",
+                    (value, description, key),
                 )
             else:
                 setting_id = uuidv7()

@@ -2,7 +2,6 @@ import os
 import tempfile
 import pytest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 # Important: Override database path before importing any db modules to isolate test data
 import leadforge.database
@@ -14,7 +13,6 @@ from leadforge.database import initialize_database, get_db_connection  # noqa: E
 from leadforge.outreach.discovery import (  # noqa: E402
     extract_emails_from_text,
     is_duplicate_outreach,
-    WebsiteAuditor,
 )
 
 
@@ -62,7 +60,7 @@ def test_is_duplicate_outreach_flow():
         "INSERT OR IGNORE INTO business_types (id, name) VALUES (?, ?);",
         (bt_id, "Dentist")
     )
-    
+
     # Insert business
     cursor.execute(
         """

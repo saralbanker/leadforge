@@ -3,7 +3,6 @@ import sqlite3
 import tempfile
 import pytest
 from leadforge.repositories.knowledge import SQLiteKnowledgeRepository
-from leadforge.repositories.base import RepositoryException
 
 
 @pytest.fixture

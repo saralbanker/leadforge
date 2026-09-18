@@ -1,0 +1,103 @@
+# Orvion Autonomous Campaign Targets
+# Primary Focus: Ahmedabad Industrial Hubs (Vatva GIDC, Odhav Industrial Estate, Kathwada GIDC, Sanand GIDC)
+# Secondary Focus: Changodar, Naroda, Santej, Bakrol GIDC
+
+defaults:
+  city: "Ahmedabad"
+  limit_per_run: 30
+  recrawl_after_days: 30
+
+priority_clusters:
+  - area: "Vatva GIDC"
+    city: "Ahmedabad"
+    categories:
+      - name: "Boiler Manufacturer"
+        search_query: "Boiler Manufacturer in Vatva GIDC Ahmedabad"
+        icp_type: "Heavy Engineering / Boilers"
+      - name: "Chemical Manufacturer"
+        search_query: "Chemical Manufacturer in Vatva GIDC Ahmedabad"
+        icp_type: "Chemicals & Dyes"
+      - name: "Valve Manufacturer"
+        search_query: "Valve Manufacturer in Vatva GIDC Ahmedabad"
+        icp_type: "Process Equipment"
+      - name: "Fabrication Engineer"
+        search_query: "Fabrication Engineer in Vatva GIDC Ahmedabad"
+        icp_type: "Heavy Fabrication"
+      - name: "Industrial Pump Manufacturer"
+        search_query: "Industrial Pump Manufacturer in Vatva GIDC Ahmedabad"
+        icp_type: "Process Equipment"
+
+  - area: "Odhav Industrial Estate"
+    city: "Ahmedabad"
+    categories:
+      - name: "Boiler Manufacturer"
+        search_query: "Boiler Manufacturer in Odhav Ahmedabad"
+        icp_type: "Heavy Engineering / Boilers"
+      - name: "Chemical Manufacturer"
+        search_query: "Chemical Manufacturer in Odhav Ahmedabad"
+        icp_type: "Chemicals & Intermediates"
+      - name: "Precision Engineer"
+        search_query: "Precision Engineer in Odhav Ahmedabad"
+        icp_type: "Precision Engineering"
+      - name: "Machinery Manufacturer"
+        search_query: "Machinery Manufacturer in Odhav Ahmedabad"
+        icp_type: "Industrial Machinery"
+      - name: "CNC Machining Manufacturer"
+        search_query: "CNC Machining Manufacturer in Odhav Ahmedabad"
+        icp_type: "Precision Engineering"
+      - name: "Hydraulic Equipment Manufacturer"
+        search_query: "Hydraulic Equipment Manufacturer in Odhav Ahmedabad"
+        icp_type: "Industrial Machinery"
+
+  - area: "Kathwada GIDC"
+    city: "Ahmedabad"
+    categories:
+      - name: "Sheet Metal Manufacturer"
+        search_query: "Sheet Metal Manufacturer in Kathwada GIDC Ahmedabad"
+        icp_type: "Heavy Fabrication"
+      - name: "Packaging Machinery Manufacturer"
+        search_query: "Packaging Machinery Manufacturer in Kathwada GIDC Ahmedabad"
+        icp_type: "Industrial Machinery"
+      - name: "Electrical Panel Manufacturer"
+        search_query: "Electrical Control Panel Manufacturer in Kathwada GIDC Ahmedabad"
+        icp_type: "Electrical Automation"
+
+  - area: "Sanand GIDC"
+    city: "Ahmedabad"
+    categories:
+      - name: "Automotive Component Manufacturer"
+        search_query: "Automotive Component Manufacturer in Sanand GIDC Ahmedabad"
+        icp_type: "Automotive & Heavy Engineering"
+      - name: "Precision Machining Manufacturer"
+        search_query: "Precision Machining Manufacturer in Sanand GIDC Ahmedabad"
+        icp_type: "Precision Engineering"
+      - name: "Industrial Equipment Manufacturer"
+        search_query: "Industrial Equipment Manufacturer in Sanand GIDC Ahmedabad"
+        icp_type: "Industrial Machinery"
+
+secondary_clusters:
+  - area: "Naroda GIDC"
+    city: "Ahmedabad"
+    categories:
+      - name: "Chemical Manufacturer"
+        search_query: "Chemical Manufacturer in Naroda GIDC Ahmedabad"
+        icp_type: "Chemicals & Dyes"
+      - name: "Engineering Works"
+        search_query: "Engineering Works in Naroda GIDC Ahmedabad"
+        icp_type: "Heavy Engineering"
+
+  - area: "Changodar Industrial Area"
+    city: "Ahmedabad"
+    categories:
+      - name: "Machinery Manufacturer"
+        search_query: "Machinery Manufacturer in Changodar Ahmedabad"
+        icp_type: "Industrial Machinery"
+      - name: "Pharma Machinery Manufacturer"
+        search_query: "Pharma Machinery Manufacturer in Changodar Ahmedabad"
+        icp_type: "Pharmaceutical Equipment"
+      - name: "Plastic Injection Moulding Manufacturer"
+        search_query: "Plastic Moulding Manufacturer in Changodar Ahmedabad"
+        icp_type: "Plastic & Polymer"
+      - name: "Manufacturer"
+        search_query: "Manufacturer in Changodar Ahmedabad"
+        icp_type: "General Manufacturing"

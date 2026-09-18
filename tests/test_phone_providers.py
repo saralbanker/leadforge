@@ -8,7 +8,6 @@ from leadforge.enrichment.phone_providers.base import PhoneResult
 from leadforge.enrichment.phone_providers.justdial_phone import (
     JustdialPhoneProvider,
     decode_justdial_icon_spans,
-    JUSTDIAL_ICON_MAP,
 )
 from leadforge.enrichment.phone_providers.indiamart_phone import IndiaMartPhoneProvider
 from leadforge.enrichment.phone_providers.tradeindia_phone import TradeIndiaPhoneProvider

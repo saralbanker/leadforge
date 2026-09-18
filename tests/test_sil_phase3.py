@@ -38,7 +38,7 @@ _temp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 _temp_db_path = Path(_temp_db.name)
 _temp_db.close()
 from leadforge.database import initialize_database  # noqa: E402
-from leadforge.sil.search_plan_generator import SearchPlan, SearchPlanGenerator  # noqa: E402
+from leadforge.sil.search_plan_generator import SearchPlan  # noqa: E402
 
 
 @pytest.fixture(scope="module", autouse=True)

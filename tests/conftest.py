@@ -1,5 +1,12 @@
 import os
+import sys
+from pathlib import Path
 import pytest
+
+LEADFORGE_ROOT = Path(__file__).resolve().parent.parent
+if str(LEADFORGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(LEADFORGE_ROOT))
+
 
 
 @pytest.fixture(scope="session", autouse=True)

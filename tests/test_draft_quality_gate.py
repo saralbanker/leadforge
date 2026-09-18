@@ -272,6 +272,161 @@ def test_scoring_without_history_is_unchanged():
     assert EmailQualityEngine.score_draft(VARIED[0])["quality_score"] == 100
 
 
+def test_cloned_whole_body_with_distinct_openings_is_blocked():
+    """Four drafts sharing the same middle+closing but with unique hooks must be caught."""
+    body_a = (
+        "I noticed Apex Precision has 45 Google reviews in Denver.\n\n"
+        "We build private order portals for manufacturers and distributors in Denver "
+        "to cut down the back-and-forth on repeat wholesale orders.\n\n"
+        "How do your dealers and distributors usually send over their repeat orders?"
+    )
+    body_b = (
+        "I saw Acme Steel exports parts to 12 countries from Austin.\n\n"
+        "We build private order portals for manufacturers and distributors in Austin "
+        "to cut down the back-and-forth on repeat wholesale orders.\n\n"
+        "How do your dealers and distributors usually send over their repeat orders?"
+    )
+    result = EmailQualityEngine.score_draft(body_b, previous_bodies=[body_a])
+    assert result["passed"] is False
+    assert result["quality_score"] <= 60
+    assert any("Email body is" in i for i in result["issues"])
+
+
+def test_slot_varied_bodies_all_pass_repetition_check():
+    """Drafts composed with varied slot combinations pass repetition checks clean."""
+    b1 = (
+        "I noticed Apex Precision has 45 Google reviews in Denver.\n\n"
+        "Taking dealer orders over WhatsApp or phone means part numbers get mixed up and staff spend hours re-typing quantities into the accounts system. We set up simple dealer order portals for manufacturers in Denver.\n\n"
+        "Do your distributors call in their repeat orders right now?"
+    )
+    b2 = (
+        "I saw Acme Steel exports parts to 12 countries from Austin.\n\n"
+        "When distributors place repeat orders by message, manual entry often causes wrong quantities or delayed dispatches. We build dedicated order portals where dealers log in and submit purchase orders directly.\n\n"
+        "How much time does your team spend typing up dealer orders each day?"
+    )
+    b3 = (
+        "Found your manufacturing listing in Chicago.\n\n"
+        "Handling distributor orders manually takes up hours of desk time every week and creates dispatch errors. We build clean dealer portals where your distributors place orders against your actual catalog.\n\n"
+        "Would a simple order portal for your distributors be worth a quick look?"
+    )
+    seen = []
+    for b in [b1, b2, b3]:
+        res = EmailQualityEngine.score_draft(b, previous_bodies=seen)
+        assert res["passed"] is True
+        assert res["quality_score"] == 100
+        seen.append(b)
+
+
+def test_bulk_approve_holds_back_batch_internal_duplicates(tmp_path, monkeypatch):
+    """Bulk approval must hold back drafts whose bodies closely match another draft in the SAME batch."""
+    import asyncio
+    import uuid
+    db = tmp_path / "batch.db"
+    monkeypatch.setenv("LEADFORGE_SKIP_BOOTSTRAP", "1")
+    monkeypatch.setenv("LEADFORGE_DB_PATH", str(db))
+
+    import leadforge.database as database
+    monkeypatch.setattr(database, "DB_PATH", db)
+    database.initialize_database()
+
+    b1_id, b2_id = str(uuid.uuid4()), str(uuid.uuid4())
+    o1_id, o2_id = str(uuid.uuid4()), str(uuid.uuid4())
+    d1_id, d2_id = str(uuid.uuid4()), str(uuid.uuid4())
+
+    body_1 = (
+        "I noticed Apex Precision in Denver.\n\n"
+        "We build private order portals for manufacturers and distributors in Denver to cut down repeat order friction.\n\n"
+        "How do your dealers usually send over repeat orders?"
+    )
+    body_2 = (
+        "I saw Acme Steel in Austin.\n\n"
+        "We build private order portals for manufacturers and distributors in Austin to cut down repeat order friction.\n\n"
+        "How do your dealers usually send over repeat orders?"
+    )
+
+    conn = sqlite3.connect(db)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO businesses (id, normalized_name, name) VALUES (?, 'b1', 'Apex Precision'), (?, 'b2', 'Acme Steel')", (b1_id, b2_id))
+    cursor.execute("INSERT INTO opportunities (id, business_id, title, pipeline_stage) VALUES (?, ?, 'Opp 1', 'PROSPECTING'), (?, ?, 'Opp 2', 'PROSPECTING')", (o1_id, b1_id, o2_id, b2_id))
+    cursor.execute(
+        """
+        INSERT INTO email_drafts (id, opportunity_id, campaign_name, recipient_email, subject, body, status, quality_score, quality_passed, hook_source)
+        VALUES (?, ?, 'Camp', 'a@apex.com', 'Subj 1', ?, 'PENDING_APPROVAL', 100, 1, 'llm'),
+               (?, ?, 'Camp', 'b@acme.com', 'Subj 2', ?, 'PENDING_APPROVAL', 100, 1, 'llm')
+        """,
+        (d1_id, o1_id, body_1, d2_id, o2_id, body_2),
+    )
+    conn.commit()
+    conn.close()
+
+    from leadforge.server import bulk_approve_drafts
+    res = asyncio.run(bulk_approve_drafts())
+
+    assert res["approved_count"] == 1
+    assert res["skipped_count"] == 1
+    assert res["skipped"][0]["draft_id"] == d2_id
+    assert "identical to another draft in this batch" in res["skipped"][0]["reason"]
+
+    # Verify d2 is still PENDING_APPROVAL and regenerable
+    conn = sqlite3.connect(db)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, status FROM email_drafts ORDER BY id")
+    statuses = dict(cursor.fetchall())
+    conn.close()
+
+    assert statuses[d1_id] == "APPROVED"
+    assert statuses[d2_id] == "PENDING_APPROVAL"
+
+
+def test_bulk_approve_passes_genuinely_varied_batch(tmp_path, monkeypatch):
+    """Genuinely varied drafts in a batch all pass bulk approval clean."""
+    import asyncio
+    import uuid
+    db = tmp_path / "batch_clean.db"
+    monkeypatch.setenv("LEADFORGE_SKIP_BOOTSTRAP", "1")
+    monkeypatch.setenv("LEADFORGE_DB_PATH", str(db))
+
+    import leadforge.database as database
+    monkeypatch.setattr(database, "DB_PATH", db)
+    database.initialize_database()
+
+    b1_id, b2_id = str(uuid.uuid4()), str(uuid.uuid4())
+    o1_id, o2_id = str(uuid.uuid4()), str(uuid.uuid4())
+    d1_id, d2_id = str(uuid.uuid4()), str(uuid.uuid4())
+
+    b1 = (
+        "I noticed Apex Precision in Denver.\n\n"
+        "Taking dealer orders over WhatsApp or phone means part numbers get mixed up. We set up simple dealer order portals.\n\n"
+        "Do your distributors call in their repeat orders right now?"
+    )
+    b2 = (
+        "I saw Acme Steel in Austin.\n\n"
+        "When distributors place repeat orders by message, manual entry often causes wrong quantities. We build dedicated order portals.\n\n"
+        "How much time does your team spend typing up dealer orders each day?"
+    )
+
+    conn = sqlite3.connect(db)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO businesses (id, normalized_name, name) VALUES (?, 'b1', 'Apex Precision'), (?, 'b2', 'Acme Steel')", (b1_id, b2_id))
+    cursor.execute("INSERT INTO opportunities (id, business_id, title, pipeline_stage) VALUES (?, ?, 'Opp 1', 'PROSPECTING'), (?, ?, 'Opp 2', 'PROSPECTING')", (o1_id, b1_id, o2_id, b2_id))
+    cursor.execute(
+        """
+        INSERT INTO email_drafts (id, opportunity_id, campaign_name, recipient_email, subject, body, status, quality_score, quality_passed, hook_source)
+        VALUES (?, ?, 'Camp', 'a@apex.com', 'Subj 1', ?, 'PENDING_APPROVAL', 100, 1, 'llm'),
+               (?, ?, 'Camp', 'b@acme.com', 'Subj 2', ?, 'PENDING_APPROVAL', 100, 1, 'llm')
+        """,
+        (d1_id, o1_id, b1, d2_id, o2_id, b2),
+    )
+    conn.commit()
+    conn.close()
+
+    from leadforge.server import bulk_approve_drafts
+    res = asyncio.run(bulk_approve_drafts())
+
+    assert res["approved_count"] == 2
+    assert res["skipped_count"] == 0
+
+
 # --------------------------------------------------------------------------
 # Exemplars require evidence
 # --------------------------------------------------------------------------
@@ -320,3 +475,31 @@ def test_banned_list_is_appended_to_a_custom_prompt():
     """A custom prompt has no placeholder, and previously lost the guard."""
     out = resolve_system_prompt("You write cold emails. One sentence only.")
     assert "streamline" in out and "leverage" in out
+
+
+def test_migration_025_persists_prompt_and_retry_setting(tmp_path, monkeypatch):
+    """Migration 025 must persist strengthened evidence-priority prompt and hook_max_retries."""
+    db = tmp_path / "m025.db"
+    monkeypatch.setenv("LEADFORGE_SKIP_BOOTSTRAP", "1")
+    monkeypatch.setenv("LEADFORGE_DB_PATH", str(db))
+
+    import leadforge.database as database
+    monkeypatch.setattr(database, "DB_PATH", db)
+    database.initialize_database()
+
+    conn = sqlite3.connect(db)
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key = 'llm.hook_max_retries'")
+    row = cursor.fetchone()
+    assert row is not None and row[0] == "3"
+
+    cursor.execute("SELECT value FROM settings WHERE key = 'llm.system_prompt'")
+    prompt_row = cursor.fetchone()
+    assert prompt_row is not None
+    sys_prompt = prompt_row[0]
+    assert "Evidence Priority (STRICT ORDER)" in sys_prompt
+    assert "FIRST PRIORITY" in sys_prompt
+    assert "LAST RESORT ONLY" in sys_prompt
+    assert "{banned_vocabulary}" in sys_prompt
+    conn.close()
+

@@ -1,7 +1,6 @@
 """Unit and Integration tests for Communication Engine Phase 2."""
 
 import pytest
-from unittest.mock import patch, MagicMock
 
 from leadforge.communication.context import BusinessContextBuilder
 from leadforge.communication.writer import LocalLLMEmailWriter, sanitize_input_text

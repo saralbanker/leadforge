@@ -127,6 +127,10 @@ class DecisionEngine:
             has_website=has_website,
             ssl_valid=ssl_valid,
             load_time_seconds=load_time,
+            has_booking=business_data.get("has_booking"),
+            has_order_flow=business_data.get("has_order_flow"),
+            has_contact_form=business_data.get("has_contact_form"),
+            audit_data=business_data.get("audit_data"),
         )
 
         if router_campaign:

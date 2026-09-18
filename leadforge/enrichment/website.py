@@ -12,6 +12,7 @@ from leadforge.enrichment.base import (
     is_non_business_host,
 )
 from leadforge.enrichment.http_fetch import fetch_page
+from leadforge.outreach.discovery import GENERIC_EMAILS_IGNORE
 from leadforge.utils import get_logger
 
 logger = get_logger()
@@ -155,6 +156,8 @@ class WebsiteProvider(BaseEnrichmentProvider):
             )
             if match:
                 email = match.group(1).lower().strip()
+                if email in GENERIC_EMAILS_IGNORE:
+                    continue
                 found.append(
                     EnrichmentResult(
                         email=email,
@@ -170,6 +173,8 @@ class WebsiteProvider(BaseEnrichmentProvider):
         pattern = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
         for match in pattern.findall(raw_text):
             email = match.lower().strip()
+            if email in GENERIC_EMAILS_IGNORE:
+                continue
             found.append(
                 EnrichmentResult(
                     email=email,

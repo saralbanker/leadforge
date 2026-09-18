@@ -5,34 +5,51 @@ import {
   ShieldCheck, Globe, Zap, Layers, ArrowRight,
 } from 'lucide-react';
 
-const DEFAULT_SYSTEM_PROMPT = `You are an expert B2B outreach copywriter specialized in industrial, manufacturing, and local business growth. Write a concise, highly tailored observation hook for the target business based on their gathered operational details.
+const DEFAULT_SYSTEM_PROMPT = `You are writing the OPENING LINE of a cold email to a busy small business owner. They will read this on their phone in about 3 seconds between tasks. If it does not grab them instantly, they delete it.
 
-Writing Rules:
-1. Write like a real business development professional sending a quick, relevant inquiry.
-2. Ground the observation specifically in their real industry, city/industrial zone, and digital infrastructure (e.g. absence of digital spec catalog or online procurement).
-3. Do NOT use generic pleasantries, greetings, or "hope you are well". Keep it under 25 words.
-4. Output strictly raw JSON: {"observation_hook": "Your single observation sentence here."}`;
+Rules:
+1. Write ONE sentence, maximum 15 words.
+2. Use simple, everyday words. Never use exclamation marks or em-dashes.
+3. Banned phrases, never use these or anything similar: "online presence", "digital footprint", "digital age", "solutions", "leverage", "optimize", "streamline", or any of:
+{banned_vocabulary}
+4. Stay strictly EVIDENCE-BOUND. Only state facts directly provided in the input: business name, city, category, Google rating, review count, or verified website details. If the input does not establish how they take orders or bookings, or if Operational Premise is UNCONFIRMED, you MUST NOT invent or assume their workflow. Instead, make a true observation from the verified data or ask a question rather than asserting.
+5. Do not greet them. Do not introduce yourself. Do not pitch anything, and never mention a website, portal, app, or any product by name. Just the one observation sentence.
+6. Write like a real person quickly typing an email, not a marketing department.
+
+Good examples (evidence-bound, simple, no invented claims):
+- Business "ATX Family Dental" in "Austin", Category: Dentist, Rating: 4.9, Reviews: 128, Premise: UNCONFIRMED -> {"observation_hook": "I saw ATX Family Dental has 128 reviews with a 4.9 rating in Austin."}
+- Business "Sydney Roof Masters" in "Sydney", Category: Roofing Contractor, Has Website: No -> {"observation_hook": "Sydney Roof Masters does not have a website listed for customers in Sydney."}
+- Business "Apex Law Group" in "Denver", Category: Law Firm, Website snippet mentions commercial litigation -> {"observation_hook": "I noticed Apex Law Group handles commercial litigation for businesses in Denver."}
+- Business "Oak & Iron Fabrication" in "Chicago", Category: Metal Fabrication, Premise: UNCONFIRMED -> {"observation_hook": "Do new fabrication inquiries for Oak & Iron mostly come through phone calls?"}
+
+Bad examples (invented claims or jargon, do NOT write like this):
+- "ATX Family Dental's phone-based scheduling means new patients get lost in calls." (INVENTED - scheduling method was never verified)
+- "Sydney Roof Masters currently lacks an online presence." (JARGON - violates banned vocabulary)
+
+Output strictly raw JSON: {"observation_hook": "your one sentence here"}`;
 
 const DEFAULT_USER_PROMPT_TEMPLATE = `Business Name: {business_name}
 Category: {category}
 City: {city}
-Area / Industrial Zone: {area}
+Area: {area}
 Has Website: {has_website}
 Website Domain / Scraped Snippet: {scraped_text}
 Google Rating: {rating}
 Google Review Count: {review_count}
+Operational Premise: {operational_premise}
 
 Output the single observation hook in raw JSON.`;
 
 const PROMPT_VARIABLES = [
-  { key: '{business_name}', label: 'Business Name', desc: 'e.g. Shree Ram Engineering Works' },
-  { key: '{category}', label: 'Category', desc: 'e.g. CNC Machining & Precision Eng.' },
-  { key: '{city}', label: 'City', desc: 'e.g. Ahmedabad' },
-  { key: '{area}', label: 'Area / Industrial Zone', desc: 'e.g. Phase I, GIDC Naroda' },
+  { key: '{business_name}', label: 'Business Name', desc: 'e.g. ATX Family Dental' },
+  { key: '{category}', label: 'Category', desc: 'e.g. Dentist' },
+  { key: '{city}', label: 'City', desc: 'e.g. Austin' },
+  { key: '{area}', label: 'Area', desc: 'e.g. Downtown' },
   { key: '{has_website}', label: 'Has Website', desc: 'Yes or No' },
   { key: '{scraped_text}', label: 'Scraped Text / Domain', desc: 'Extracted content or domain' },
-  { key: '{rating}', label: 'Google Rating', desc: 'e.g. 4.8' },
-  { key: '{review_count}', label: 'Google Reviews', desc: 'e.g. 86' },
+  { key: '{rating}', label: 'Google Rating', desc: 'e.g. 4.9' },
+  { key: '{review_count}', label: 'Google Reviews', desc: 'e.g. 128' },
+  { key: '{operational_premise}', label: 'Operational Premise', desc: 'CONFIRMED or UNCONFIRMED' },
 ];
 
 export default function LocalLMControl({
@@ -46,11 +63,16 @@ export default function LocalLMControl({
   const [llmStatus, setLlmStatus] = useState(null);
   const [testingConnection, setTestingConnection] = useState(false);
   const [testPromptInput, setTestPromptInput] = useState(
-    'Business Name: Shree Ram Engineering Works\nCategory: CNC Machining & Precision Engineering\nCity: Ahmedabad\nArea: GIDC Naroda Phase I\nHas Website: No\nScraped Snippet: Bulk industrial lathe & milling operations\nGoogle Rating: 4.8\nGoogle Review Count: 86'
+    'Business Name: ATX Family Dental\nCategory: Dentist\nCity: Austin\nArea: Downtown\nHas Website: Yes\nScraped Snippet: Family and cosmetic dentistry\nGoogle Rating: 4.9\nGoogle Review Count: 128\nOperational Premise: UNCONFIRMED'
   );
   const [testOutput, setTestOutput] = useState(null);
   const [runningTest, setRunningTest] = useState(false);
   const [copiedKey, setCopiedKey] = useState(null);
+  // Canonical defaults come from the backend, never from the constant below.
+  // That constant drifts: it once lagged behind the migrations that added the
+  // evidence-binding rules, so "Reset to Default" silently reverted the prompt
+  // to a version that allowed the model to invent facts about a business.
+  const [apiDefaults, setApiDefaults] = useState(null);
 
   // Load live LLM status on mount
   const checkLlmStatus = async () => {
@@ -68,9 +90,22 @@ export default function LocalLMControl({
     }
   };
 
+  const loadDefaults = async () => {
+    try {
+      const res = await fetch(`${apiBase}/settings/defaults`);
+      if (res.ok) setApiDefaults(await res.json());
+    } catch {
+      setApiDefaults(null); // fall back to the bundled constant
+    }
+  };
+
   useEffect(() => {
     checkLlmStatus();
+    loadDefaults();
   }, [apiBase]);
+
+  const canonicalSystemPrompt = () =>
+    apiDefaults?.['llm.system_prompt'] || DEFAULT_SYSTEM_PROMPT;
 
   // Execute interactive test inference
   const handleRunTest = async () => {
@@ -83,7 +118,7 @@ export default function LocalLMControl({
         body: JSON.stringify({
           api_url: editedSettings['llm.api_url'] || settingsData['llm.api_url']?.value || 'http://localhost:11434',
           model_name: editedSettings['llm.model_name'] || settingsData['llm.model_name']?.value || 'llama3.1:8b',
-          system_prompt: editedSettings['llm.system_prompt'] || settingsData['llm.system_prompt']?.value || DEFAULT_SYSTEM_PROMPT,
+          system_prompt: editedSettings['llm.system_prompt'] || settingsData['llm.system_prompt']?.value || canonicalSystemPrompt(),
           prompt: testPromptInput,
           temperature: parseFloat(editedSettings['llm.temperature'] ?? settingsData['llm.temperature']?.value ?? '0.2'),
           max_tokens: parseInt(editedSettings['llm.max_tokens'] ?? settingsData['llm.max_tokens']?.value ?? '150', 10),
@@ -333,7 +368,7 @@ export default function LocalLMControl({
               className="btn-secondary"
               style={{ fontSize: '0.72rem', padding: '0.35rem 0.65rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}
               onClick={() => {
-                setEditedSettings(prev => ({ ...prev, ['llm.system_prompt']: DEFAULT_SYSTEM_PROMPT }));
+                setEditedSettings(prev => ({ ...prev, ['llm.system_prompt']: canonicalSystemPrompt() }));
                 saveSetting('llm.system_prompt');
               }}
             >
@@ -364,7 +399,7 @@ export default function LocalLMControl({
             color: '#e2e8f0',
             resize: 'vertical',
           }}
-          value={editedSettings['llm.system_prompt'] ?? settingsData['llm.system_prompt']?.value ?? DEFAULT_SYSTEM_PROMPT}
+          value={editedSettings['llm.system_prompt'] ?? settingsData['llm.system_prompt']?.value ?? canonicalSystemPrompt()}
           onChange={e => setEditedSettings(prev => ({ ...prev, ['llm.system_prompt']: e.target.value }))}
         />
       </div>

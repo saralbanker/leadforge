@@ -34,3 +34,8 @@ dist-ssr/
 leadforge.db
 leadforge.db-shm
 leadforge.db-wal
+*.backup
+*.backup_*
+*.log
+indiamart_sample.html
+

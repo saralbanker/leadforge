@@ -8,24 +8,46 @@ from leadforge.utils import get_logger
 
 logger = get_logger()
 
-DEFAULT_SYSTEM_PROMPT = """You are an expert B2B outreach copywriter specialized in industrial, manufacturing, and local business growth. Write a concise, highly tailored observation hook for the target business based on their gathered operational details.
+DEFAULT_SYSTEM_PROMPT = """You are writing the OPENING LINE of a cold email to a busy small business owner. They will read this on their phone in about 3 seconds between tasks. If it does not grab them instantly, they delete it.
 
-Writing Rules:
-1. Write like a real business development professional sending a quick, relevant inquiry.
-2. Ground the observation specifically in their real industry, city/industrial zone, and digital infrastructure (e.g. absence of digital spec catalog or online procurement).
-3. Do NOT use generic pleasantries, greetings, or "hope you are well". Keep it under 25 words.
-4. Output strictly raw JSON: {"observation_hook": "Your single observation sentence here."}
-5. NEVER use any of these words or phrases — they read as marketing filler and will get the email rejected:
-{banned_vocabulary}"""
+Rules:
+1. Write ONE sentence, maximum 15 words. Keep it strictly under 15 words.
+2. Evidence Priority (STRICT ORDER):
+   - FIRST PRIORITY: Concrete and specific details from their own website text (e.g. specific products, machinery, export markets, specializations, services).
+   - SECOND PRIORITY: A real distinguishing detail about their business type or presence (e.g. that they do not have a website listed).
+   - LAST RESORT ONLY: Google rating and review count ONLY if no website text or specific detail is available. Never recite Google ratings if usable website text was provided.
+3. Use simple, everyday words. Never use exclamation marks, em-dashes, or meaningless filler like "in various locations" or "has a website".
+4. Banned phrases, never use these or anything similar: "online presence", "digital footprint", "digital age", "solutions", "leverage", "optimize", "streamline", or any of:
+{banned_vocabulary}
+5. Stay strictly EVIDENCE-BOUND. Only state facts directly provided in the input: business name, city, category, Google rating, review count, or verified website details. If the input does not establish how they take orders or bookings, or if Operational Premise is UNCONFIRMED, you MUST NOT invent or assume their workflow. Instead, make a true observation from the verified data or ask a question rather than asserting.
+6. Do not greet them. Do not introduce yourself. Do not pitch anything, and never mention a website, portal, app, or any product by name. Just the one observation sentence.
+7. Write like a real person quickly typing an email, not a marketing department.
+8. NEVER write as though you are their customer or a prospective buyer. You are not shopping. Phrases like "for buyers like me", "as a potential customer", or "I was looking to buy" are forbidden. You are a person who looked at their business, nothing more.
+
+Good examples (evidence-bound, concrete site detail first, simple, under 15 words):
+- Business "Apex Law Group" in "Denver", Category: Law Firm, Website snippet mentions commercial litigation -> {"observation_hook": "I noticed Apex Law Group handles commercial litigation for businesses in Denver."}
+- Business "Ratan Plastics" in "Chicago", Category: Plastic Manufacturer, Website snippet: exports to 45 countries -> {"observation_hook": "I saw Ratan Plastics exports packaging to over 45 countries."}
+- Business "Sydney Roof Masters" in "Sydney", Category: Roofing Contractor, Has Website: No -> {"observation_hook": "Sydney Roof Masters does not have a website listed for customers in Sydney."}
+- Business "ATX Family Dental" in "Austin", Category: Dentist, Rating: 4.9, Reviews: 128, No website snippet, Premise: UNCONFIRMED -> {"observation_hook": "I saw ATX Family Dental has 128 reviews with a 4.9 rating in Austin."}
+- Business "Oak & Iron Fabrication" in "Chicago", Category: Metal Fabrication, Premise: UNCONFIRMED -> {"observation_hook": "Do new fabrication inquiries for Oak & Iron mostly come through phone calls?"}
+
+Bad examples (invented claims, filler, jargon, or reciting ratings when site text exists - do NOT write like this):
+- "ATX Family Dental's phone-based scheduling means new patients get lost in calls." (INVENTED - scheduling method was never verified)
+- "Sydney Roof Masters currently lacks an online presence." (JARGON - violates banned vocabulary)
+- "Sahajanand Industries Limited has a Google rating of 3.5 from 36 reviews in various locations." (FILLER and RATING RECITAL)
+- "Bhagwati Engineering Corporation has a website that showcases its textile machinery spare parts." (FILLER - "has a website")
+
+Output strictly raw JSON: {"observation_hook": "your one sentence here"}"""
 
 DEFAULT_USER_PROMPT_TEMPLATE = """Business Name: {business_name}
 Category: {category}
 City: {city}
-Area / Industrial Zone: {area}
+Area: {area}
 Has Website: {has_website}
 Website Domain / Scraped Snippet: {scraped_text}
 Google Rating: {rating}
 Google Review Count: {review_count}
+Operational Premise: {operational_premise}
 
 Output the single observation hook in raw JSON."""
 
@@ -179,6 +201,13 @@ class OllamaHookGenerator:
             return settings.get_str("llm.enabled", "true").lower() in ("true", "1", "yes")
         return True
 
+    @property
+    def max_retries(self) -> int:
+        settings = self._get_settings()
+        if settings:
+            return settings.get_int("llm.hook_max_retries", settings.get_int("llm.max_retries", 3))
+        return 3
+
     @staticmethod
     def get_approved_exemplars(category: str = "", limit: int = 2) -> List[Dict[str, str]]:
         """Returns past drafts that earned a reply, for in-context learning.
@@ -192,6 +221,13 @@ class OllamaHookGenerator:
         A reply is the one signal that a human read the email and responded, so
         that is what qualifies now. With no replies recorded, this returns
         nothing and the model writes from the prompt alone.
+
+        Requiring merely an INBOUND message is not enough either: once the IMAP
+        reader started ingesting bounce notifications, every hard-bounced send
+        acquired an inbound message and was about to be promoted to an exemplar.
+        A mailer-daemon rejection is the opposite of evidence that copy worked, so
+        machine-generated classifications are excluded and only a genuine human
+        reply qualifies.
         """
         try:
             from leadforge.database import get_db_connection
@@ -211,6 +247,8 @@ class OllamaHookGenerator:
                       SELECT 1 FROM communication_threads ct
                       JOIN communication_messages cm ON cm.thread_id = ct.id
                       WHERE ct.business_id = b.id AND cm.direction = 'INBOUND'
+                        AND COALESCE(cm.classification_label, '') NOT IN
+                            ('BOUNCE', 'OUT_OF_OFFICE', 'UNSUBSCRIBE')
                   )
             """
             params = []
@@ -252,12 +290,17 @@ class OllamaHookGenerator:
         category: str = "",
         area: str = "",
         has_website: Optional[bool] = None,
+        premise_verified: bool = True,
     ) -> str:
         """Invokes the configured local LM via Ollama to generate the observation hook.
 
+        Validates output against hook quality rules (length, banned terms, filler,
+        evidence priority). Retries up to max_retries on validation failure, then
+        falls back to best candidate seen recording provenance reason.
+
         Returns:
             Personalized observation hook string, or a deterministic fallback
-            on connection, timeout, or format validation failures.
+            on connection, timeout, or validation failures.
         """
         fallback_hook = f"I noticed your business, {business_name}, has a solid local presence in {city}."
         if review_count and review_count > 0:
@@ -271,6 +314,12 @@ class OllamaHookGenerator:
 
         sanitized_scraped = sanitize_scraped_text(scraped_text)
         eff_has_website = has_website if has_website is not None else bool(scraped_text)
+        premise_str = "CONFIRMED" if premise_verified else "UNCONFIRMED"
+        has_usable_site_text = bool(
+            sanitized_scraped
+            and sanitized_scraped.strip()
+            and sanitized_scraped.strip() != "No website content available."
+        )
 
         # Build prompt using configured template with graceful fallback keys
         template = self.user_prompt_template
@@ -283,6 +332,8 @@ class OllamaHookGenerator:
             "category": category or "Local Business",
             "area": area or city,
             "has_website": "Yes" if eff_has_website else "No",
+            "operational_premise": premise_str,
+            "premise_verified": premise_str,
         }
 
         try:
@@ -305,7 +356,7 @@ class OllamaHookGenerator:
                 clean_ref = ex.get("body", "").split("\n\n---")[0].strip().replace("\n", " ")
                 if len(clean_ref) > 200:
                     clean_ref = clean_ref[:197] + "..."
-                sys_prompt += f"Example {i} ({ex.get('business_name', 'Business')} - {ex.get('category', 'Manufacturing')}): \"{clean_ref}\"\n"
+                sys_prompt += f"Example {i} ({ex.get('business_name', 'Business')} - {ex.get('category', 'Local Business')}): \"{clean_ref}\"\n"
 
         payload = {
             "model": self.model_name,
@@ -320,75 +371,127 @@ class OllamaHookGenerator:
             },
         }
 
-        try:
-            logger.info(f"Requesting Ollama hook generation for business: '{business_name}' using model '{self.model_name}' (keep_alive: {self.keep_alive})")
-            response = requests.post(
-                f"{self.api_url}/api/generate",
-                json=payload,
-                timeout=300,  # 5 minutes: a long custom system prompt can push CPU-only prompt-eval alone past 2-3 minutes
-            )
+        from leadforge.outreach.quality import EmailQualityEngine
 
-            if response.status_code != 200:
-                logger.warning(f"Ollama server returned status code {response.status_code}. Using fallback.")
-                return fallback_hook
+        max_attempts = max(1, self.max_retries)
+        candidates: List[tuple[str, List[str], int]] = []
 
-            response_json = response.json()
-            raw_response = response_json.get("response", "").strip()
-
-            # Clean potential markdown JSON wrapping
-            json_str = raw_response
-            match = re.search(r"\{.*\}", raw_response, re.DOTALL)
-            if match:
-                json_str = match.group(0)
-
-            hook = ""
+        for attempt in range(1, max_attempts + 1):
             try:
-                parsed = json.loads(json_str)
-                if isinstance(parsed, dict):
-                    hook = (
-                        parsed.get("observation_hook")
-                        or parsed.get("hook")
-                        or parsed.get("observation")
-                        or parsed.get("pitch")
-                        or parsed.get("text")
-                        or parsed.get("sentence")
-                        or parsed.get("message")
-                        or parsed.get("result")
-                        or ""
-                    ).strip()
-                    if not hook and parsed.get("body"):
-                        # Some system prompts (e.g. full-email schemas) return subject/body
-                        # instead of a standalone hook fragment. Use the opening of the body
-                        # as the observation hook rather than discarding the generation.
-                        body_text = str(parsed["body"]).strip()
-                        first_sentence = re.split(r"(?<=[.!?])\s+", body_text, maxsplit=1)[0]
-                        hook = first_sentence.strip()
-                    if not hook:
-                        # Last resort: personalization_basis is a short internal label, not
-                        # reader-facing prose, but it beats discarding the generation entirely.
-                        hook = str(parsed.get("personalization_basis") or "").strip()
-                    if not hook and len(parsed) == 1:
-                        # Grab whatever single value is in the dict
-                        hook = str(list(parsed.values())[0]).strip()
-                elif isinstance(parsed, str):
-                    hook = parsed.strip()
-            except Exception:
+                logger.info(
+                    f"Requesting Ollama hook generation (attempt {attempt}/{max_attempts}) "
+                    f"for business: '{business_name}' using model '{self.model_name}' (keep_alive: {self.keep_alive})"
+                )
+                response = requests.post(
+                    f"{self.api_url}/api/generate",
+                    json=payload,
+                    timeout=300,  # 5 minutes: a long custom system prompt can push CPU-only prompt-eval alone past 2-3 minutes
+                )
+
+                if response.status_code != 200:
+                    logger.warning(
+                        f"Ollama server returned status code {response.status_code} on attempt {attempt}."
+                    )
+                    continue
+
+                response_json = response.json()
+                raw_response = response_json.get("response", "").strip()
+
+                # Clean potential markdown JSON wrapping
+                json_str = raw_response
+                match = re.search(r"\{.*\}", raw_response, re.DOTALL)
+                if match:
+                    json_str = match.group(0)
+
                 hook = ""
+                try:
+                    parsed = json.loads(json_str)
+                    if isinstance(parsed, dict):
+                        hook = (
+                            parsed.get("observation_hook")
+                            or parsed.get("hook")
+                            or parsed.get("observation")
+                            or parsed.get("pitch")
+                            or parsed.get("text")
+                            or parsed.get("sentence")
+                            or parsed.get("message")
+                            or parsed.get("result")
+                            or ""
+                        ).strip()
+                        if not hook and parsed.get("body"):
+                            # Some system prompts (e.g. full-email schemas) return subject/body
+                            # instead of a standalone hook fragment. Use the opening of the body
+                            # as the observation hook rather than discarding the generation.
+                            body_text = str(parsed["body"]).strip()
+                            first_sentence = re.split(r"(?<=[.!?])\s+", body_text, maxsplit=1)[0]
+                            hook = first_sentence.strip()
+                        if not hook:
+                            # Last resort: personalization_basis is a short internal label, not
+                            # reader-facing prose, but it beats discarding the generation entirely.
+                            hook = str(parsed.get("personalization_basis") or "").strip()
+                        if not hook and len(parsed) == 1:
+                            # Grab whatever single value is in the dict
+                            hook = str(list(parsed.values())[0]).strip()
+                    elif isinstance(parsed, str):
+                        hook = parsed.strip()
+                except Exception:
+                    hook = ""
 
-            if not hook:
-                logger.warning("Parsed Ollama response has empty hook. Using fallback.")
-                return fallback_hook
+                if not hook:
+                    logger.warning(f"Parsed Ollama response on attempt {attempt} has empty hook.")
+                    continue
 
-            logger.info("Successfully generated personalized observation hook via local Ollama.")
-            self._last_hook_source = "llm"
-            return hook
+                is_valid, issues = EmailQualityEngine.validate_hook(
+                    hook, has_site_text=has_usable_site_text
+                )
+                if is_valid:
+                    logger.info(
+                        f"Successfully generated and validated personalized observation hook via local Ollama (attempt {attempt})."
+                    )
+                    self._last_hook_source = "llm"
+                    return hook
 
-        except requests.exceptions.RequestException as req_err:
-            logger.warning(f"Ollama connection error: {req_err}. Using fallback.")
-            return fallback_hook
-        except Exception as e:
-            logger.error(f"Unexpected error in hook generation: {str(e)}")
-            return fallback_hook
+                logger.warning(
+                    f"Hook on attempt {attempt}/{max_attempts} failed validation: {issues}. Hook: '{hook}'"
+                )
+                penalty = len(issues) * 10
+                word_count = len(hook.split())
+                if word_count > 15:
+                    penalty += (word_count - 15) * 2
+                candidates.append((hook, issues, penalty))
+
+            except requests.exceptions.RequestException as req_err:
+                logger.warning(f"Ollama connection error on attempt {attempt}: {req_err}")
+                continue
+            except Exception as e:
+                logger.error(f"Unexpected error in hook generation on attempt {attempt}: {str(e)}")
+                continue
+
+        if candidates:
+            candidates.sort(key=lambda x: x[2])
+            best_hook, best_issues, _ = candidates[0]
+            issue_text = best_issues[0] if best_issues else "validation_failed"
+            if "exceeds 15 words" in issue_text:
+                reason = "too_long"
+            elif "banned phrase" in issue_text:
+                reason = "banned_phrase"
+            elif "filler" in issue_text:
+                reason = "filler"
+            elif "Rating recital" in issue_text:
+                reason = "rating_recital_with_site_text"
+            else:
+                reason = issue_text
+
+            self._last_hook_source = f"fallback:degraded:{reason}"
+            logger.warning(
+                f"All {max_attempts} hook generation attempts failed validation. "
+                f"Falling back to best candidate ({self._last_hook_source}): '{best_hook}'"
+            )
+            return best_hook
+
+        logger.warning("No LLM candidates generated. Using fallback.")
+        self._last_hook_source = "fallback"
+        return fallback_hook
 
     @classmethod
     def test_connection(cls, api_url: Optional[str] = None) -> Dict[str, Any]:
@@ -437,9 +540,9 @@ class OllamaHookGenerator:
     ) -> Dict[str, Any]:
         """Runs a test generation against the local LM and returns timing and generated output."""
         url = (api_url or OLLAMA_API_URL).rstrip("/")
-        model = model_name or "llama3.1:8b"
+        model = model_name or "qwen2.5:3b"
         sys_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
-        user_prompt = prompt or "Business Name: Shree Ram Engineering Works\nCategory: CNC Machining\nCity: Ahmedabad\nOutput raw JSON."
+        user_prompt = prompt or "Business Name: Apex Dental Care\nCategory: Dentist\nCity: Austin\nArea: Downtown\nHas Website: Yes\nScraped Snippet: Family and cosmetic dentistry\nGoogle Rating: 4.8\nGoogle Review Count: 86\nOperational Premise: UNCONFIRMED\nOutput raw JSON."
 
         payload = {
             "model": model,
@@ -495,6 +598,11 @@ def compile_compliance_footer(settings_getter) -> str:
         "If you'd prefer not to receive future emails from us, reply with 'unsubscribe' and we will remove you immediately.",
     )
 
+    # US CAN-SPAM and Canadian CASL both require a valid physical postal address
+    # in commercial email. It does not have to be an office - a home address is
+    # what most sole traders use - but it has to be real and it has to be there.
+    postal = settings_getter.get_str("outreach.footer_postal_address", "")
+
     parts = []
     if company:
         parts.append(company)
@@ -505,6 +613,8 @@ def compile_compliance_footer(settings_getter) -> str:
     footer_lines = ["---"]
     if header_line:
         footer_lines.append(header_line)
+    if postal:
+        footer_lines.append(postal)
     if opt_out:
         footer_lines.append(opt_out)
 

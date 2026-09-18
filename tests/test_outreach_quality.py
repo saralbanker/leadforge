@@ -51,3 +51,75 @@ def test_quality_links_and_images_banned():
     result = EmailQualityEngine.score_draft(body)
     assert result["quality_score"] < 100
     assert any("link or URL" in issue for issue in result["issues"])
+
+
+# ============================================================================
+# Hook Validator Rule Tests (Task E)
+# ============================================================================
+
+def test_validate_hook_too_long():
+    """Hook exceeding 15 words must be flagged as invalid."""
+    long_hook = (
+        "Sakar Plastic Industries has a website with over 50 years of experience "
+        "as an eco-friendly packaging provider."
+    )
+    is_valid, issues = EmailQualityEngine.validate_hook(long_hook, has_site_text=True)
+    assert is_valid is False
+    assert any("exceeds 15 words" in issue for issue in issues)
+
+
+def test_validate_hook_banned_vocabulary():
+    """Hook containing banned vocabulary (e.g. 'solutions', 'streamline') must be invalid."""
+    banned_hook = "We build custom packaging solutions for manufacturers in Denver."
+    is_valid, issues = EmailQualityEngine.validate_hook(banned_hook, has_site_text=True)
+    assert is_valid is False
+    assert any("banned phrase" in issue.lower() for issue in issues)
+
+
+def test_validate_hook_filler_locations():
+    """Meaningless filler like 'in various locations' must be flagged as invalid."""
+    filler_hook = "Sahajanand Industries Limited has 36 reviews in various locations."
+    is_valid, issues = EmailQualityEngine.validate_hook(filler_hook, has_site_text=False)
+    assert is_valid is False
+    assert any("filler" in issue.lower() for issue in issues)
+
+
+def test_validate_hook_filler_has_website():
+    """Trivial observation 'has a website' must be flagged as filler."""
+    filler_hook = "Bhagwati Engineering Corporation has a website that showcases textile machinery parts."
+    is_valid, issues = EmailQualityEngine.validate_hook(filler_hook, has_site_text=True)
+    assert is_valid is False
+    assert any("filler" in issue.lower() for issue in issues)
+
+
+def test_validate_hook_negative_website_is_not_filler():
+    """Observing that a business has NO website listed is legitimate and NOT filler."""
+    no_web_hook = "Sydney Roof Masters does not have a website listed for customers in Sydney."
+    is_valid, issues = EmailQualityEngine.validate_hook(no_web_hook, has_site_text=False)
+    assert is_valid is True
+    assert issues == []
+
+
+def test_validate_hook_rating_recital_with_site_text_rejected():
+    """Bare rating/review recital WHEN usable site text was supplied must be REJECTED."""
+    rating_hook = "Bombay Hosiery House has a Google rating of 3.5 based on 14 reviews from customers."
+    is_valid, issues = EmailQualityEngine.validate_hook(rating_hook, has_site_text=True)
+    assert is_valid is False
+    assert any("Rating recital" in issue for issue in issues)
+
+
+def test_validate_hook_rating_recital_without_site_text_accepted():
+    """Bare rating/review recital WITHOUT usable site text is the acceptable last resort and must be ACCEPTED."""
+    rating_hook = "I saw ATX Family Dental has 128 reviews with a 4.9 rating in Austin."
+    is_valid, issues = EmailQualityEngine.validate_hook(rating_hook, has_site_text=False)
+    assert is_valid is True
+    assert issues == []
+
+
+def test_validate_hook_valid_site_evidence():
+    """Specific concrete observation from site text under 15 words must pass cleanly."""
+    clean_hook = "I saw Ratan Plastics exports packaging to over 45 countries."
+    is_valid, issues = EmailQualityEngine.validate_hook(clean_hook, has_site_text=True)
+    assert is_valid is True
+    assert issues == []
+

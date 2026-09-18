@@ -29,8 +29,9 @@ class BusinessContextBuilder:
             cursor.execute(
                 """
                 SELECT b.id, b.name, b.display_phone, b.contact_email, b.rating, b.review_count, b.website_domain,
-                       a.city, a.area, a.address_line
+                       bt.name as category, a.city, a.area, a.address_line
                 FROM businesses b
+                LEFT JOIN business_types bt ON b.business_type_id = bt.id
                 LEFT JOIN addresses a ON a.business_id = b.id
                 WHERE b.id = ?
                 LIMIT 1
@@ -67,6 +68,7 @@ class BusinessContextBuilder:
             return {
                 "business_id": biz_row["id"],
                 "name": biz_row["name"],
+                "category": biz_row["category"] or "",
                 "city": biz_row["city"] or "Unknown",
                 "area": biz_row["area"] or "",
                 "phone": biz_row["display_phone"] or "",

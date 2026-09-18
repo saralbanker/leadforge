@@ -1,0 +1,17 @@
+[Unit]
+Description=Wake this machine before the LeadForge daily run
+
+[Timer]
+# Five minutes before the user timer's 08:00 run, so the machine is fully
+# resumed before the job starts.
+OnCalendar=*-*-* 07:55:00
+# The whole point: set a real RTC alarm so a suspended machine wakes up.
+# This requires a system unit - a user timer cannot arm the hardware clock.
+WakeSystem=true
+# Do NOT catch up. If the alarm was missed there is nothing to make up for;
+# the user timer already handles catch-up for the actual work.
+Persistent=false
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

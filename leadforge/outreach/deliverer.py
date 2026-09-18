@@ -4,7 +4,7 @@ import socket
 import threading
 import time
 import random
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formatdate, make_msgid
@@ -21,7 +21,7 @@ from leadforge.config import (
     SMTP_TIMEOUT,
     SMTP_CONFIGURED,
 )
-from leadforge.database import get_db_connection, append_event
+from leadforge.database import get_db_connection, append_event, uuidv7
 from leadforge.utils import get_logger
 
 logger = get_logger()
@@ -109,8 +109,19 @@ class SMTPEmailDeliverer:
                     except Exception:
                         pass
 
-    def send_email(self, to_email: str, subject: str, body: str) -> None:
-        """Assembles and transmits a single outreach email securely with retry logic for 4xx errors."""
+    def send_email(
+        self,
+        to_email: str,
+        subject: str,
+        body: str,
+        in_reply_to: Optional[str] = None,
+        references: Optional[str] = None,
+    ) -> str:
+        """Assembles and transmits a single outreach email securely with retry logic for 4xx errors.
+
+        Returns:
+            The RFC-compliant Message-ID header string.
+        """
         cfg = self.refresh_config()
         if not cfg["is_configured"]:
             raise ValueError("SMTP is not configured. Please define SMTP environment variables or configure Settings.")
@@ -124,7 +135,13 @@ class SMTPEmailDeliverer:
         msg["MIME-Version"] = "1.0"
 
         domain = self.from_email.split("@")[-1] if "@" in self.from_email else "leadforge.ai"
-        msg["Message-ID"] = make_msgid(domain=domain)
+        msg_id = make_msgid(domain=domain)
+        msg["Message-ID"] = msg_id
+
+        if in_reply_to:
+            msg["In-Reply-To"] = in_reply_to
+        if references:
+            msg["References"] = references
 
         if self.reply_to:
             msg["Reply-To"] = self.reply_to
@@ -141,7 +158,7 @@ class SMTPEmailDeliverer:
             try:
                 self._connect_and_send(msg, to_email)
                 logger.info(f"Email successfully delivered to {to_email}")
-                return
+                return str(msg_id)
             except (smtplib.SMTPAuthenticationError, smtplib.SMTPRecipientsRefused) as permanent_err:
                 # Permanent non-retryable failures
                 logger.error(f"Permanent SMTP failure for {to_email}: {permanent_err}")
@@ -184,9 +201,11 @@ class SMTPEmailDeliverer:
 
             from leadforge.repositories.settings import SettingsCache
             settings_cache = SettingsCache()
-            daily_limit = settings_cache.get_int("outreach.daily_send_limit", 20)
+            # PH-002: Check daily send limit before starting batch.
+            # The ceiling is the lower of the configured limit and the warm-up
+            # ramp, and drops to zero outright if recent mail is bouncing.
+            from leadforge.outreach.ramp import delivery_allowance
 
-            # PH-002: Check daily send limit before starting batch
             today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             cursor.execute(
                 """
@@ -197,13 +216,20 @@ class SMTPEmailDeliverer:
             )
             sent_today = cursor.fetchone()[0]
 
+            allowance, allowance_reason = delivery_allowance(conn, settings_cache)
+            logger.info(f"Delivery allowance: {allowance_reason}")
+            # Express the allowance as an absolute ceiling so the per-item guard
+            # below keeps working unchanged.
+            daily_limit = sent_today + allowance
+
             if sent_today >= daily_limit:
-                logger.warning(f"Daily send safety limit reached ({sent_today}/{daily_limit}). Halting outreach dispatch.")
+                logger.warning(f"Outreach dispatch halted: {allowance_reason}")
                 append_event(
                     event_type="DAILY_SEND_LIMIT_REACHED",
                     entity_type="System",
                     entity_id="outreach",
-                    payload={"sent_today": sent_today, "daily_limit": daily_limit},
+                    payload={"sent_today": sent_today, "daily_limit": daily_limit,
+                             "reason": allowance_reason},
                     conn=conn,
                 )
                 conn.commit()
@@ -212,10 +238,11 @@ class SMTPEmailDeliverer:
 
             cursor.execute(
                 """
-                SELECT id, recipient_email, subject, body 
-                FROM email_drafts 
-                WHERE status = 'APPROVED'
-                ORDER BY created_at ASC
+                SELECT ed.id, ed.recipient_email, ed.subject, ed.body, ed.campaign_name, ed.opportunity_id, o.business_id 
+                FROM email_drafts ed
+                LEFT JOIN opportunities o ON ed.opportunity_id = o.id
+                WHERE ed.status = 'APPROVED'
+                ORDER BY ed.created_at ASC
                 """
             )
             drafts = cursor.fetchall()
@@ -252,9 +279,24 @@ class SMTPEmailDeliverer:
                 to_email = draft["recipient_email"]
                 subject = draft["subject"]
                 body = draft["body"]
+                campaign_name = draft["campaign_name"] or "Outreach"
+                opp_id = draft["opportunity_id"]
+                biz_id = draft["business_id"]
+
+                # Deduplication guard: Never send if this recipient already received an email
+                cursor.execute(
+                    "SELECT 1 FROM email_drafts WHERE LOWER(recipient_email) = ? AND status = 'SENT' AND id != ?",
+                    (to_email.strip().lower(), draft_id)
+                )
+                if cursor.fetchone():
+                    logger.warning(f"Skipping draft {draft_id}: recipient {to_email} already received an email. Marking CANCELLED.")
+                    cursor.execute("UPDATE email_drafts SET status = 'CANCELLED', error_message = 'Duplicate recipient already sent', updated_at = ? WHERE id = ?",
+                                   (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), draft_id))
+                    conn.commit()
+                    continue
 
                 try:
-                    self.send_email(to_email, subject, body)
+                    msg_id = self.send_email(to_email, subject, body)
 
                     # Update SQLite to SENT
                     sent_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -266,6 +308,100 @@ class SMTPEmailDeliverer:
                         """,
                         (sent_at, sent_at, draft_id),
                     )
+
+                    # Resolve business_id if missing from opportunity join
+                    if not biz_id and to_email:
+                        cursor.execute(
+                            "SELECT id FROM businesses WHERE LOWER(contact_email) = ? ORDER BY created_at DESC LIMIT 1",
+                            (to_email.strip().lower(),),
+                        )
+                        b_row = cursor.fetchone()
+                        if b_row:
+                            biz_id = b_row["id"]
+
+                    if biz_id:
+                        # Check suppression status
+                        cursor.execute("SELECT is_suppressed FROM businesses WHERE id = ?", (biz_id,))
+                        b_supp_row = cursor.fetchone()
+                        is_suppressed = bool(b_supp_row and b_supp_row["is_suppressed"])
+                        if not is_suppressed and to_email:
+                            cursor.execute("SELECT 1 FROM unsubscribe_suppressions WHERE email = ?", (to_email.strip().lower(),))
+                            if cursor.fetchone():
+                                is_suppressed = True
+
+                        # Find or create communication thread (reuse if existing, never create a second)
+                        cursor.execute(
+                            "SELECT id, current_state FROM communication_threads WHERE business_id = ? ORDER BY created_at DESC LIMIT 1",
+                            (biz_id,),
+                        )
+                        t_row = cursor.fetchone()
+                        if t_row:
+                            thread_id = t_row["id"]
+                            cursor.execute(
+                                """
+                                UPDATE communication_threads 
+                                SET current_state = 'AWAITING_REPLY', last_activity_at = ?, updated_at = ? 
+                                WHERE id = ?
+                                """,
+                                (sent_at, sent_at, thread_id),
+                            )
+                        else:
+                            thread_id = uuidv7()
+                            cursor.execute(
+                                """
+                                INSERT INTO communication_threads (
+                                    id, business_id, opportunity_id, campaign_name, current_state, last_activity_at, created_at, updated_at
+                                ) VALUES (?, ?, ?, ?, 'AWAITING_REPLY', ?, ?, ?)
+                                """,
+                                (thread_id, biz_id, opp_id, campaign_name, sent_at, sent_at, sent_at),
+                            )
+
+                        # Record outbound message in communication_messages with RFC Message-ID
+                        header_id = str(msg_id) if msg_id is not None else None
+                        cursor.execute(
+                            """
+                            INSERT INTO communication_messages (
+                                id, thread_id, direction, message_id_header, sender_email, recipient_email, subject, body_text, prompt_version, created_at
+                            ) VALUES (?, ?, 'OUTBOUND', ?, ?, ?, ?, ?, 'initial_v1', ?)
+                            """,
+                            (uuidv7(), thread_id, header_id, self.from_email or "outreach@leadforge.ai", to_email, subject, body, sent_at),
+                        )
+
+                        # Schedule Touch 2 follow-up if business is not suppressed
+                        if not is_suppressed:
+                            max_touches = settings_cache.get_int(
+                                "outreach.max_sequence_touches",
+                                settings_cache.get_int("outreach.max_touches", settings_cache.get_int("outreach.followup_max_touches", 3)),
+                            )
+                            if max_touches >= 2:
+                                cursor.execute(
+                                    "SELECT 1 FROM followup_schedules WHERE thread_id = ? AND status = 'PENDING'",
+                                    (thread_id,),
+                                )
+                                if not cursor.fetchone():
+                                    step2_delay = settings_cache.get_int(
+                                        "outreach.followup_step2_delay_days",
+                                        settings_cache.get_int("outreach.followup_delay_days_step2", 3),
+                                    )
+                                    sched_dt = datetime.now(timezone.utc) + timedelta(days=step2_delay)
+                                    sched_for = sched_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                                    sched_id = uuidv7()
+                                    cursor.execute(
+                                        """
+                                        INSERT INTO followup_schedules (
+                                            id, thread_id, sequence_step, scheduled_for, status, trigger_reason, created_at
+                                        ) VALUES (?, ?, 2, ?, 'PENDING', 'AWAITING_REPLY', ?)
+                                        """,
+                                        (sched_id, thread_id, sched_for, sent_at),
+                                    )
+                                    append_event(
+                                        event_type="FOLLOWUP_SCHEDULED",
+                                        entity_type="FollowupSchedule",
+                                        entity_id=sched_id,
+                                        payload={"thread_id": thread_id, "sequence_step": 2, "scheduled_for": sched_for},
+                                        conn=conn,
+                                    )
+
                     append_event(
                         event_type="EMAIL_SENT",
                         entity_type="EmailDraft",

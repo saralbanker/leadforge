@@ -2,11 +2,9 @@
 
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import patch
 
 from leadforge.communication.sequencer import FollowupSequencer
 from leadforge.communication.repository import SQLiteCommunicationRepository
-from leadforge.communication.optout import OptOutManager
 from leadforge.database import get_db_connection, uuidv7, initialize_database
 from leadforge.server import app
 

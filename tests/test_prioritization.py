@@ -1,6 +1,5 @@
-import pytest
-from leadforge.prioritization import LeadPrioritizationEngine, PriorityResult
-from leadforge.scorer import score_lead, process_and_score_leads
+from leadforge.prioritization import LeadPrioritizationEngine
+from leadforge.scorer import process_and_score_leads
 
 
 def test_deterministic_repeatability():

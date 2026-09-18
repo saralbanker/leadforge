@@ -9,7 +9,6 @@ import httpx
 from leadforge.enrichment.base import BaseEnrichmentProvider, EnrichmentResult
 from leadforge.enrichment.website import WebsiteProvider
 from leadforge.enrichment.aggregator import EmailCandidateAggregator
-from leadforge.repositories.enrichment import SQLiteEnrichmentRepository
 from leadforge.enrichment.orchestrator import EmailEnrichmentOrchestrator
 from leadforge.database import get_db_connection, uuidv7
 

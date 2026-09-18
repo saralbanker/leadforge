@@ -4,7 +4,11 @@ from fastapi.responses import FileResponse
 import asyncio
 import os
 import json
+import re
+import subprocess
+from pathlib import Path
 from pydantic import BaseModel
+import pathlib
 from typing import List, Dict, Any, Optional
 from leadforge.config import OUTPUT_DIR, LOGS_DIR
 from leadforge.main import run_pipeline
@@ -593,6 +597,26 @@ async def list_settings() -> Dict[str, Any]:
         conn.close()
 
 
+@app.get("/api/settings/defaults")
+async def settings_defaults() -> Dict[str, Any]:
+    """Canonical default values, read from the code that actually uses them.
+
+    The UI used to carry its own hardcoded copy of the system prompt for its
+    "Reset to Default" button. That copy drifted, so pressing reset silently
+    reverted the prompt past the evidence-binding and anti-fabrication rules that
+    later migrations added. Defaults must have exactly one source of truth.
+    """
+    from leadforge.outreach.generator import (
+        DEFAULT_SYSTEM_PROMPT,
+        DEFAULT_USER_PROMPT_TEMPLATE,
+    )
+
+    return {
+        "llm.system_prompt": DEFAULT_SYSTEM_PROMPT,
+        "llm.user_prompt_template": DEFAULT_USER_PROMPT_TEMPLATE,
+    }
+
+
 class SettingUpdateRequest(BaseModel):
     value: str
 
@@ -1101,6 +1125,10 @@ async def generate_draft(req: GenerateDraftRequest):
             has_website=audit["has_website"],
             ssl_valid=audit["ssl_valid"],
             load_time_seconds=audit["load_time_seconds"],
+            has_booking=audit.get("has_booking"),
+            has_order_flow=audit.get("has_order_flow"),
+            has_contact_form=audit.get("has_contact_form"),
+            audit_data=audit,
         )
 
         if not campaign:
@@ -1129,6 +1157,7 @@ async def generate_draft(req: GenerateDraftRequest):
         # verbatim reads as bulk mail in a subject line, and derails the model.
         from leadforge.normalizer import clean_business_name
         display_name = clean_business_name(business_name) or business_name or ""
+        premise_verified = campaign.get("premise_verified", True)
 
         generator = OllamaHookGenerator()
         hook, hook_source = await asyncio.to_thread(
@@ -1141,6 +1170,7 @@ async def generate_draft(req: GenerateDraftRequest):
             category=category,
             area=opp["area"] if "area" in opp.keys() and opp["area"] else "",
             has_website=bool(website_domain),
+            premise_verified=premise_verified,
         )
 
         # 5. Compile copy templates
@@ -1153,8 +1183,12 @@ async def generate_draft(req: GenerateDraftRequest):
         custom_sub = (req.custom_subject or "").strip()
         custom_bod = (req.custom_body or "").strip()
 
-        subject_tpl = custom_sub or campaign["copy_template"]["subject"]
-        body_tpl = custom_bod or campaign["copy_template"]["body_structure"]
+        subject_tpl = custom_sub or CampaignRouter.select_subject(campaign.get("copy_template", {}), business_id=business_id)
+        body_tpl = custom_bod or CampaignRouter.select_body(
+            campaign.get("copy_template", {}),
+            business_id=business_id,
+            premise_verified=premise_verified,
+        )
         campaign_name = "Custom Template Outreach" if (custom_sub or custom_bod) else campaign["name"]
 
         area_val = opp["area"] if "area" in opp.keys() and opp["area"] else ""
@@ -1458,7 +1492,7 @@ async def bulk_approve_drafts(req: Optional[BulkApproveRequest] = None):
         min_score = settings_cache.get_int("outreach.min_quality_score", 80)
         require_llm = settings_cache.get_str("outreach.require_llm_hook", "true").lower() in ("true", "1", "yes")
 
-        cols = "id, quality_score, quality_passed, quality_issues, hook_source"
+        cols = "id, body, quality_score, quality_passed, quality_issues, hook_source"
         if req and req.draft_ids:
             placeholders = ",".join(["?"] * len(req.draft_ids))
             cursor.execute(
@@ -1471,9 +1505,13 @@ async def bulk_approve_drafts(req: Optional[BulkApproveRequest] = None):
         rows = cursor.fetchall()
         approved_count = 0
         skipped = []
+        approved_bodies: List[str] = []
+
+        from leadforge.outreach.quality import EmailQualityEngine
 
         for row in rows:
             draft_id = row["id"]
+            body = row["body"] or ""
             score = row["quality_score"]
             reason = None
 
@@ -1489,11 +1527,25 @@ async def bulk_approve_drafts(req: Optional[BulkApproveRequest] = None):
                             reason += f" ({'; '.join(parsed)})"
                     except (ValueError, TypeError):
                         pass
-            elif require_llm and row["hook_source"] == "fallback":
+            elif require_llm and str(row["hook_source"] or "").startswith("fallback"):
+                # Provenance is now a prefixed string, e.g. "fallback:degraded:too_long"
+                # when the validator exhausted its retries and shipped the best bad
+                # candidate. Matching the bare word "fallback" let every degraded
+                # hook through the gate at quality 100.
+                detail = str(row["hook_source"] or "")
                 reason = (
-                    "the opening line is the deterministic fallback, not model output — "
-                    "the language model was unavailable when this draft was generated"
+                    f"the opening line did not pass hook validation ({detail}) — "
+                    "it is not clean model output, so this draft is held back"
                 )
+            elif approved_bodies:
+                sim_match = EmailQualityEngine.find_similar(body, approved_bodies)
+                if sim_match:
+                    ratio, offending = sim_match
+                    clean_offending = offending.replace("\n", " ").strip()[:60]
+                    reason = (
+                        f"body is {int(ratio * 100)}% identical to another draft in this batch "
+                        f'("{clean_offending}...") — held back to prevent repetitive bulk outreach'
+                    )
 
             if reason:
                 skipped.append({"draft_id": draft_id, "reason": reason})
@@ -1518,6 +1570,8 @@ async def bulk_approve_drafts(req: Optional[BulkApproveRequest] = None):
                 conn=conn,
             )
             approved_count += 1
+            if body:
+                approved_bodies.append(body)
 
         conn.commit()
         msg = f"Approved {approved_count} draft(s)."
@@ -1762,6 +1816,273 @@ async def get_communication_stats():
         }
     finally:
         conn.close()
+
+
+@app.post("/api/outreach/poll-replies")
+@app.post("/api/outreach/replies/poll")
+async def poll_replies():
+    """Polls IMAP inbox for new replies and bounces, ingests, classifies, and executes side effects."""
+    from leadforge.communication.inbox import IMAPInboxMonitor
+    monitor = IMAPInboxMonitor()
+    result = await asyncio.to_thread(monitor.poll_inbox)
+    return result
+
+
+# ── Outreach Schedule & Systemd Timer ─────────────────────────────────────────
+
+SCHEDULE_TIME_REGEX = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+
+
+def get_systemd_timer_path() -> Path:
+    override = os.environ.get("LEADFORGE_SYSTEMD_TIMER_PATH")
+    if override:
+        return Path(override)
+    return Path.home() / ".config" / "systemd" / "user" / "leadforge-daily.timer"
+
+
+def write_systemd_timer_unit(time_hhmm: str) -> None:
+    if not SCHEDULE_TIME_REGEX.match(time_hhmm):
+        raise ValueError(f"Invalid schedule time format: {time_hhmm}")
+    unit_content = (
+        f"[Unit]\n"
+        f"Description=LeadForge daily outreach at {time_hhmm}\n\n"
+        f"[Timer]\n"
+        f"OnCalendar=*-*-* {time_hhmm}:00\n"
+        f"# Catch up if the machine was asleep or off at {time_hhmm}.\n"
+        f"Persistent=true\n"
+        f"# Avoid every install firing on the same second.\n"
+        f"RandomizedDelaySec=180\n\n"
+        f"[Install]\n"
+        f"WantedBy=timers.target\n"
+    )
+    timer_path = get_systemd_timer_path()
+    timer_path.parent.mkdir(parents=True, exist_ok=True)
+    timer_path.write_text(unit_content, encoding="utf-8")
+
+
+def read_systemd_timer_status() -> Dict[str, Any]:
+    """Reads actual systemd timer status for leadforge-daily.timer."""
+    try:
+        res = subprocess.run(
+            [
+                "systemctl",
+                "--user",
+                "show",
+                "leadforge-daily.timer",
+                "--property=ActiveState,SubState,UnitFileState,NextElapseUSecRealtime,TimersCalendar",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if res.returncode != 0:
+            return {
+                "systemd_available": False,
+                "timer_active": False,
+                "timer_state": "unavailable",
+                "next_run": None,
+            }
+        props: Dict[str, str] = {}
+        for line in res.stdout.strip().splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                props[k.strip()] = v.strip()
+        active_state = props.get("ActiveState", "unknown")
+        timer_active = (active_state == "active")
+        next_run = props.get("NextElapseUSecRealtime")
+        if not next_run or next_run in ("n/a", "0", ""):
+            next_run = None
+        return {
+            "systemd_available": True,
+            "timer_active": timer_active,
+            "timer_state": active_state,
+            "next_run": next_run,
+        }
+    except Exception as e:
+        logger.warning(f"Unable to read systemd timer status: {e}")
+        return {
+            "systemd_available": False,
+            "timer_active": False,
+            "timer_state": "unavailable",
+            "next_run": None,
+        }
+
+
+def apply_systemd_schedule(time_hhmm: str, enabled: bool) -> Dict[str, Any]:
+    """Writes unit file and reloads/starts/stops the timer via systemctl --user."""
+    try:
+        write_systemd_timer_unit(time_hhmm)
+        subprocess.run(
+            ["systemctl", "--user", "daemon-reload"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
+        )
+        if enabled:
+            subprocess.run(
+                ["systemctl", "--user", "enable", "leadforge-daily.timer"],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=5,
+            )
+            subprocess.run(
+                ["systemctl", "--user", "restart", "leadforge-daily.timer"],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=5,
+            )
+        else:
+            subprocess.run(
+                ["systemctl", "--user", "stop", "leadforge-daily.timer"],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=5,
+            )
+            subprocess.run(
+                ["systemctl", "--user", "disable", "leadforge-daily.timer"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        status = read_systemd_timer_status()
+        status["timer_applied"] = True
+        return status
+    except Exception as e:
+        logger.warning(f"Failed to apply schedule to systemd: {e}")
+        return {
+            "systemd_available": False,
+            "timer_active": False,
+            "timer_state": "unavailable",
+            "next_run": None,
+            "timer_applied": False,
+            "error": str(e),
+        }
+
+
+class OutreachScheduleRequest(BaseModel):
+    time: str
+    enabled: bool = True
+
+
+def read_wake_alarm() -> Dict[str, Any]:
+    """State of the system-level RTC wake alarm, if one is installed.
+
+    A user timer cannot arm the hardware clock, so on a laptop that suspends
+    overnight the scheduled run does not happen at its scheduled time - it happens
+    whenever someone opens the lid. `leadforge-wake.timer` is an optional system
+    unit that wakes the machine shortly beforehand. Report honestly whether it
+    exists and whether the configured run time actually falls after it.
+    """
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["systemctl", "show", "leadforge-wake.timer",
+             "--property=LoadState", "--property=ActiveState", "--property=NextElapseUSecRealtime"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        return {"installed": False, "active": False, "wake_time": None, "next_wake": None}
+
+    props = dict(
+        line.split("=", 1) for line in proc.stdout.splitlines() if "=" in line
+    )
+    installed = props.get("LoadState") == "loaded"
+    wake_time = None
+    if installed:
+        try:
+            unit = pathlib.Path("/etc/systemd/system/leadforge-wake.timer").read_text()
+            for line in unit.splitlines():
+                if line.strip().startswith("OnCalendar="):
+                    wake_time = line.split("*-*-*", 1)[-1].strip()[:5]
+        except Exception:
+            wake_time = None
+    return {
+        "installed": installed,
+        "active": props.get("ActiveState") == "active",
+        "wake_time": wake_time,
+        "next_wake": props.get("NextElapseUSecRealtime") or None,
+    }
+
+
+def schedule_warning(schedule_time: str, wake: Dict[str, Any]) -> Optional[str]:
+    """Plain-language warning when the run time cannot actually be honoured."""
+    if not wake.get("installed") or not wake.get("active"):
+        return (
+            "No RTC wake alarm is installed, so if this machine is asleep at the "
+            "scheduled time the run happens when you next wake it, not on time."
+        )
+    wake_time = wake.get("wake_time")
+    if wake_time and schedule_time <= wake_time:
+        return (
+            f"The wake alarm fires at {wake_time}, which is not before the {schedule_time} "
+            "run. Move the run later, or move the alarm earlier, or a sleeping "
+            "machine will miss it."
+        )
+    return None
+
+
+@app.get("/api/outreach/schedule")
+async def get_outreach_schedule():
+    """Returns current outreach schedule settings and live systemd timer state."""
+    from leadforge.repositories.settings import SQLiteSettingsRepository
+    repo = SQLiteSettingsRepository()
+    schedule_time = repo.get("outreach.schedule_time") or "08:00"
+    enabled_val = repo.get("outreach.schedule_enabled")
+    schedule_enabled = (enabled_val.lower() != "false") if enabled_val is not None else True
+
+    systemd_info = read_systemd_timer_status()
+    wake = read_wake_alarm()
+    return {
+        "time": schedule_time,
+        "enabled": schedule_enabled,
+        "timer_active": systemd_info["timer_active"],
+        "timer_state": systemd_info["timer_state"],
+        "next_run": systemd_info["next_run"],
+        "systemd_available": systemd_info["systemd_available"],
+        "timer_applied": systemd_info["systemd_available"],
+        "wake_alarm": wake,
+        "warning": schedule_warning(schedule_time, wake),
+    }
+
+
+@app.post("/api/outreach/schedule")
+async def update_outreach_schedule(req: OutreachScheduleRequest):
+    """Validates, persists, and applies the daily outreach schedule to systemd."""
+    # SECURITY: strict validation of time format BEFORE any file or subprocess interaction
+    if not isinstance(req.time, str) or not SCHEDULE_TIME_REGEX.match(req.time):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid time format. Expected 24h HH:MM format (00:00 to 23:59).",
+        )
+
+    from leadforge.repositories.settings import SQLiteSettingsRepository
+    repo = SQLiteSettingsRepository()
+    repo.set("outreach.schedule_time", req.time)
+    repo.set("outreach.schedule_enabled", "true" if req.enabled else "false")
+
+    apply_result = apply_systemd_schedule(req.time, req.enabled)
+
+    response = {
+        "time": req.time,
+        "enabled": req.enabled,
+        "timer_active": apply_result["timer_active"],
+        "timer_state": apply_result["timer_state"],
+        "next_run": apply_result["next_run"],
+        "systemd_available": apply_result["systemd_available"],
+        "timer_applied": apply_result["timer_applied"],
+    }
+    if not apply_result["timer_applied"]:
+        response["message"] = f"Schedule saved to settings, but systemd timer could not be applied: {apply_result.get('error', 'systemd unavailable')}"
+    else:
+        response["message"] = "Schedule saved and applied to systemd timer successfully."
+
+    return response
+
+
 
 
 

@@ -1,7 +1,6 @@
 import smtplib
-import socket
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 from leadforge.database import get_db_connection, initialize_database, uuidv7
 from leadforge.outreach.deliverer import SMTPEmailDeliverer
 from leadforge.outreach.generator import compile_compliance_footer
@@ -100,7 +99,7 @@ def test_ph002_daily_send_safety_limit():
     deliverer = SMTPEmailDeliverer()
 
     with patch("leadforge.outreach.deliverer.SMTP_CONFIGURED", True):
-        with patch.object(deliverer, "send_email") as mock_send:
+        with patch.object(deliverer, "send_email", return_value="<test-msg-id@leadforge.ai>") as mock_send:
             sent_count = deliverer.send_approved_drafts()
             assert sent_count == 2
             assert mock_send.call_count == 2

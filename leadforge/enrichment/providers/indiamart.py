@@ -31,10 +31,24 @@ class IndiaMartProvider(BaseEnrichmentProvider):
     ) -> List[EnrichmentResult]:
         name = (business_profile.get("name") or "").strip()
         city = (business_profile.get("city") or "").strip()
+        phone = (business_profile.get("phone") or "").strip()
         if not name:
             return []
 
         query = f"{name} {city}".strip()
+        found = await self._search_and_extract(query)
+
+        # Name search is frequently too noisy/sparse for small listings that
+        # IndiaMart only indexes under the seller's phone number. Retry with
+        # the phone as the query before giving up.
+        if not found and phone:
+            digits = re.sub(r"\D", "", phone)[-10:]
+            if len(digits) == 10:
+                found = await self._search_and_extract(digits)
+
+        return found
+
+    async def _search_and_extract(self, query: str) -> List[EnrichmentResult]:
         search_url = f"https://dir.indiamart.com/search.mp?ss={urllib.parse.quote(query)}"
 
         found: List[EnrichmentResult] = []

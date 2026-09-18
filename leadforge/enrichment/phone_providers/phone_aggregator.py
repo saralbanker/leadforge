@@ -7,6 +7,43 @@ from leadforge.enrichment.phone_providers.base import PhoneResult
 from leadforge.normalizer import canonical_phone, normalize_phone
 
 
+def classify_indian_phone(phone_str: str, canon: str) -> Tuple[str, bool]:
+    """Deterministically identifies phone type (MOBILE, LANDLINE, VIRTUAL_PBX, TOLL_FREE)."""
+    if not canon or len(canon) < 7:
+        return "UNKNOWN", False
+
+    digits = canon
+    if digits.startswith("1800") or digits.startswith("1860") or digits.startswith("911800"):
+        return "TOLL_FREE", False
+
+    # IndiaMART Virtual PBX (Bangalore STD 080 + 4xxx series)
+    if (
+        digits.startswith("91804")
+        or digits.startswith("0804")
+        or digits.startswith("804")
+        or phone_str.strip().startswith("0804")
+    ):
+        return "VIRTUAL_PBX", False
+
+    # Prominent Indian industrial city STD codes (2-digit after 91)
+    std_codes = {"11", "22", "33", "44", "80", "40", "20", "79", "71", "72"}
+    if len(digits) == 12 and digits.startswith("91"):
+        if digits[2:4] in std_codes:
+            return "LANDLINE", False
+        if digits[2] in "6789":
+            return "MOBILE", True
+        return "LANDLINE", False
+
+    if len(digits) == 10:
+        if digits[:2] in std_codes:
+            return "LANDLINE", False
+        if digits[0] in "6789":
+            return "MOBILE", True
+        return "LANDLINE", False
+
+    return "LANDLINE", False
+
+
 class PhoneCandidateAggregator:
     """Ranks, deduplicates, and aggregates phone numbers from multi-platform scrapers."""
 
@@ -28,17 +65,14 @@ class PhoneCandidateAggregator:
         if initial_phone:
             canon = canonical_phone(initial_phone)
             if len(canon) >= 7:
-                is_mob = (len(canon) == 10 and canon[0] in "6789") or (
-                    len(canon) == 12 and canon.startswith("91") and canon[2] in "6789"
-                )
-                p_type = "MOBILE" if is_mob else "LANDLINE"
+                p_type, is_mob = classify_indian_phone(initial_phone, canon)
                 all_candidates.append(
                     PhoneResult(
                         phone=normalize_phone(initial_phone),
                         phone_type=p_type,
                         source_provider=initial_source,
                         source_url="",
-                        confidence_score=0.92 if is_mob else 0.85,
+                        confidence_score=0.92 if is_mob else (0.75 if p_type == "VIRTUAL_PBX" else 0.85),
                         is_mobile=is_mob,
                         raw_text=initial_phone,
                     )

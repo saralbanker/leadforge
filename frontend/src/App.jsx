@@ -921,6 +921,66 @@ export default function App() {
     }
   };
 
+  // ── Outreach Daily Run Schedule State ─────────────────────────────────────
+  const [scheduleTime, setScheduleTime] = useState('08:00');
+  const [scheduleEnabled, setScheduleEnabled] = useState(true);
+  const [scheduleNextRun, setScheduleNextRun] = useState(null);
+  const [scheduleTimerActive, setScheduleTimerActive] = useState(true);
+  // Why the run time might not be honoured (e.g. no RTC wake alarm on a laptop
+  // that sleeps). Comes from the backend, which reads the actual systemd state.
+  const [scheduleWarning, setScheduleWarning] = useState(null);
+  const [scheduleSystemdAvailable, setScheduleSystemdAvailable] = useState(true);
+  const [scheduleSaveState, setScheduleSaveState] = useState('idle'); // 'idle' | 'saving' | 'success' | 'error'
+  const [scheduleSaveError, setScheduleSaveError] = useState(null);
+
+  const fetchSchedule = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/outreach/schedule`);
+      if (res.ok) {
+        const data = await res.json();
+        setScheduleWarning(data.warning || null);
+        if (data.time) setScheduleTime(data.time);
+        if (typeof data.enabled === 'boolean') setScheduleEnabled(data.enabled);
+        setScheduleNextRun(data.next_run || null);
+        if (typeof data.timer_active === 'boolean') setScheduleTimerActive(data.timer_active);
+        if (typeof data.systemd_available === 'boolean') setScheduleSystemdAvailable(data.systemd_available);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  const handleSaveSchedule = async () => {
+    if (scheduleSaveState === 'saving') return;
+    setScheduleSaveState('saving');
+    setScheduleSaveError(null);
+    try {
+      const res = await fetch(`${API_BASE}/outreach/schedule`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ time: scheduleTime, enabled: scheduleEnabled }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setScheduleSaveState('success');
+        if (data.time) setScheduleTime(data.time);
+        if (typeof data.enabled === 'boolean') setScheduleEnabled(data.enabled);
+        setScheduleNextRun(data.next_run || null);
+        if (typeof data.timer_active === 'boolean') setScheduleTimerActive(data.timer_active);
+        if (typeof data.systemd_available === 'boolean') setScheduleSystemdAvailable(data.systemd_available);
+        setTimeout(() => setScheduleSaveState('idle'), 3000);
+      } else {
+        setScheduleSaveState('error');
+        const errDetail = data?.detail || 'Failed to save schedule';
+        setScheduleSaveError(typeof errDetail === 'string' ? errDetail : JSON.stringify(errDetail));
+        setTimeout(() => setScheduleSaveState('idle'), 5000);
+      }
+    } catch (e) {
+      setScheduleSaveState('error');
+      setScheduleSaveError(e.message || 'Network error saving schedule');
+      setTimeout(() => setScheduleSaveState('idle'), 5000);
+    }
+  };
+
+
 
   const fetchAnalytics = useCallback(async () => {
     setLoadingAnalytics(true);
@@ -1022,6 +1082,7 @@ export default function App() {
       fetchOpps();
       fetchDrafts();
       fetchOutreachMetrics();
+      fetchSchedule();
     }
     if (activeTab === 'opportunities') {
       fetchOpps();
@@ -1030,7 +1091,7 @@ export default function App() {
     if (activeTab === 'businesses')    fetchBiz();
     if (activeTab === 'analytics')     fetchAnalytics();
     if (activeTab === 'settings')      fetchSettings();
-  }, [activeTab, fetchBiz, fetchOpps, fetchDrafts, fetchOutreachMetrics, fetchAnalytics, fetchSettings]);
+  }, [activeTab, fetchBiz, fetchOpps, fetchDrafts, fetchOutreachMetrics, fetchSchedule, fetchAnalytics, fetchSettings]);
 
   // ── Derived data ──────────────────────────────────────────────────────────
 
@@ -2555,7 +2616,7 @@ export default function App() {
             </div>
 
             <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
-              <button className="btn-secondary" onClick={() => { fetchBiz(); fetchOpps(); fetchDrafts(); fetchOutreachMetrics(); }}>
+              <button className="btn-secondary" onClick={() => { fetchBiz(); fetchOpps(); fetchDrafts(); fetchOutreachMetrics(); fetchSchedule(); }}>
                 <RefreshCw size={13} /> Refresh Hub
               </button>
               <button
@@ -2588,6 +2649,121 @@ export default function App() {
             <MetricCard Icon={Send} value={`${sentToday} / ${dailyLimit}`} label="Sent Today (Quota)" />
             <MetricCard Icon={AlertTriangle} value={`${failureRate}%`} label="Failure Rate" />
           </div>
+        </div>
+
+        {/* ── DAILY RUN SCHEDULE PANEL ── */}
+        <div className="panel" style={{ background: 'linear-gradient(135deg, rgba(20, 184, 166, 0.04) 0%, rgba(19, 25, 38, 0.6) 100%)', borderColor: 'var(--border-color)' }}>
+          <div className="panel-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '1rem', paddingBottom: '0.6rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Clock size={18} color="var(--color-accent)" />
+              <span>Daily Run Schedule</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              {!scheduleSystemdAvailable ? (
+                <span style={{ fontSize: '0.75rem', color: '#f59e0b', background: 'rgba(245,158,11,0.1)', padding: '2px 8px', borderRadius: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <AlertTriangle size={12} /> Systemd Unavailable
+                </span>
+              ) : scheduleEnabled && scheduleTimerActive ? (
+                <span style={{ fontSize: '0.75rem', color: '#10b981', background: 'rgba(16,185,129,0.1)', padding: '2px 8px', borderRadius: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <CheckCircle2 size={12} /> Timer Active
+                </span>
+              ) : (
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', background: 'rgba(107,114,128,0.1)', padding: '2px 8px', borderRadius: 4 }}>
+                  Timer Inactive
+                </span>
+              )}
+            </div>
+          </div>
+
+          {scheduleWarning && (
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', marginBottom: '0.9rem', padding: '0.6rem 0.75rem', borderRadius: 6, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.25)' }}>
+              <AlertTriangle size={14} color="#f59e0b" style={{ flexShrink: 0, marginTop: 2 }} />
+              <span style={{ fontSize: '0.78rem', color: '#fbbf24', lineHeight: 1.45 }}>{scheduleWarning}</span>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '1rem' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '1.25rem' }}>
+              {/* Time Input */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <label className="form-label" style={{ margin: 0, fontSize: '0.82rem', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                  Run Time:
+                </label>
+                <input
+                  type="text"
+                  className="form-input"
+                  style={{ width: '90px', padding: '0.4rem 0.6rem', fontSize: '0.85rem', fontFamily: 'monospace', textAlign: 'center' }}
+                  value={scheduleTime}
+                  onChange={e => {
+                    setScheduleTime(e.target.value);
+                    if (scheduleSaveError) setScheduleSaveError(null);
+                  }}
+                  placeholder="08:00"
+                />
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>(24h local)</span>
+              </div>
+
+              {/* Enable / Disable Toggle */}
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.84rem', userSelect: 'none' }}>
+                <input
+                  type="checkbox"
+                  checked={scheduleEnabled}
+                  onChange={e => setScheduleEnabled(e.target.checked)}
+                  style={{ cursor: 'pointer', accentColor: 'var(--color-accent)' }}
+                />
+                <span>Schedule Enabled</span>
+              </label>
+
+              {/* Next Scheduled Run */}
+              <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+                Next Run:{' '}
+                <strong style={{ color: scheduleEnabled && scheduleNextRun ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+                  {scheduleEnabled ? (scheduleNextRun || 'Calculating…') : 'Disabled (no upcoming run)'}
+                </strong>
+              </div>
+            </div>
+
+            {/* Save Button */}
+            <div>
+              <button
+                className="btn-secondary"
+                style={{
+                  borderColor: scheduleSaveState === 'success' ? '#10b981' : scheduleSaveState === 'error' ? '#ef4444' : 'var(--color-accent)',
+                  color: scheduleSaveState === 'success' ? '#10b981' : scheduleSaveState === 'error' ? '#ef4444' : 'var(--color-accent)',
+                  background: scheduleSaveState === 'success' ? 'rgba(16,185,129,0.08)' : scheduleSaveState === 'error' ? 'rgba(239,68,68,0.08)' : 'rgba(20,184,166,0.05)',
+                  padding: '0.45rem 1rem',
+                  fontSize: '0.82rem',
+                }}
+                onClick={handleSaveSchedule}
+                disabled={scheduleSaveState === 'saving'}
+              >
+                {scheduleSaveState === 'saving' ? (
+                  <RefreshCw size={13} style={{ animation: 'spin 1s linear infinite' }} />
+                ) : scheduleSaveState === 'success' ? (
+                  <CheckCircle2 size={13} />
+                ) : scheduleSaveState === 'error' ? (
+                  <AlertTriangle size={13} />
+                ) : (
+                  <Check size={13} />
+                )}
+                {scheduleSaveState === 'saving'
+                  ? 'Saving…'
+                  : scheduleSaveState === 'success'
+                  ? 'Schedule Saved!'
+                  : scheduleSaveState === 'error'
+                  ? 'Save Failed'
+                  : 'Save Schedule'}
+              </button>
+            </div>
+          </div>
+
+          {/* Error Feedback */}
+          {scheduleSaveError && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: '#ef4444', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', padding: '0.4rem 0.75rem', borderRadius: 6, fontSize: '0.78rem', marginTop: '0.75rem' }}>
+              <AlertTriangle size={13} />
+              <span>{scheduleSaveError}</span>
+            </div>
+          )}
         </div>
 
         {/* ── CUSTOM EMAIL CAMPAIGN COMPOSER & CATEGORY REACH ── */}

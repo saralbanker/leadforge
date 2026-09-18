@@ -117,14 +117,14 @@ class SQLiteCommunicationRepository:
             conn.close()
 
     def find_thread_by_email(self, email_address: str) -> Optional[CommunicationThread]:
-        """Finds an active thread by matching sender/recipient email against business records or past messages."""
+        """Finds an active thread by matching sender/recipient email against business records, past messages, or email drafts."""
         if not email_address:
             return None
         clean_email = email_address.strip().lower()
         conn = get_db_connection()
         try:
             cursor = conn.cursor()
-            # 1. Match via businesses.contact_email
+            # 1. Match via businesses.contact_email with an existing thread
             cursor.execute(
                 """
                 SELECT ct.id, ct.business_id, ct.opportunity_id, ct.campaign_name, ct.current_state, ct.last_activity_at, ct.created_at, ct.updated_at
@@ -137,31 +137,148 @@ class SQLiteCommunicationRepository:
             )
             row = cursor.fetchone()
             if not row:
-                # 2. Match via past outbound messages in communication_messages
+                # 2. Match via past outbound or inbound messages in communication_messages
                 cursor.execute(
                     """
                     SELECT ct.id, ct.business_id, ct.opportunity_id, ct.campaign_name, ct.current_state, ct.last_activity_at, ct.created_at, ct.updated_at
                     FROM communication_threads ct
                     JOIN communication_messages cm ON ct.id = cm.thread_id
-                    WHERE LOWER(cm.recipient_email) = ?
+                    WHERE LOWER(cm.recipient_email) = ? OR LOWER(cm.sender_email) = ?
                     ORDER BY cm.created_at DESC LIMIT 1
                     """,
-                    (clean_email,),
+                    (clean_email, clean_email),
                 )
                 row = cursor.fetchone()
 
+            if row:
+                return CommunicationThread(
+                    id=row["id"],
+                    business_id=row["business_id"],
+                    opportunity_id=row["opportunity_id"],
+                    campaign_name=row["campaign_name"],
+                    current_state=row["current_state"],
+                    last_activity_at=row["last_activity_at"],
+                    created_at=row["created_at"],
+                    updated_at=row["updated_at"],
+                )
+
+            # 3. Match via email_drafts (in case email was sent via outreach pipeline before thread was initialized)
+            cursor.execute(
+                """
+                SELECT b.id as business_id, ed.opportunity_id, ed.campaign_name
+                FROM email_drafts ed
+                JOIN opportunities o ON ed.opportunity_id = o.id
+                JOIN businesses b ON o.business_id = b.id
+                WHERE LOWER(ed.recipient_email) = ?
+                ORDER BY ed.created_at DESC LIMIT 1
+                """,
+                (clean_email,),
+            )
+            draft_row = cursor.fetchone()
+            if draft_row:
+                b_id = draft_row["business_id"]
+                opp_id = draft_row["opportunity_id"]
+                camp_name = draft_row["campaign_name"] or "Outreach"
+                conn.close()
+                return self.create_thread(
+                    business_id=b_id,
+                    campaign_name=camp_name,
+                    opportunity_id=opp_id,
+                    initial_state="AWAITING_REPLY",
+                )
+
+            # 4. Match via businesses table directly
+            cursor.execute(
+                """
+                SELECT id as business_id FROM businesses
+                WHERE LOWER(contact_email) = ?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (clean_email,),
+            )
+            biz_row = cursor.fetchone()
+            if biz_row:
+                b_id = biz_row["business_id"]
+                conn.close()
+                return self.create_thread(
+                    business_id=b_id,
+                    campaign_name="Inbound Discovery",
+                    initial_state="AWAITING_REPLY",
+                )
+
+            return None
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def find_message_by_header(self, message_id_header: str) -> Optional[CommunicationMessage]:
+        """Finds a communication message by its Message-ID header for deduplication."""
+        if not message_id_header:
+            return None
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, thread_id, direction, message_id_header, sender_email, recipient_email, subject, body_text, classification_label, prompt_version, created_at
+                FROM communication_messages
+                WHERE message_id_header = ?
+                LIMIT 1
+                """,
+                (message_id_header.strip(),),
+            )
+            row = cursor.fetchone()
             if not row:
                 return None
-
-            return CommunicationThread(
+            return CommunicationMessage(
                 id=row["id"],
-                business_id=row["business_id"],
-                opportunity_id=row["opportunity_id"],
-                campaign_name=row["campaign_name"],
-                current_state=row["current_state"],
-                last_activity_at=row["last_activity_at"],
+                thread_id=row["thread_id"],
+                direction=row["direction"],
+                message_id_header=row["message_id_header"],
+                sender_email=row["sender_email"],
+                recipient_email=row["recipient_email"],
+                subject=row["subject"],
+                body_text=row["body_text"],
+                classification_label=row["classification_label"],
+                prompt_version=row["prompt_version"],
                 created_at=row["created_at"],
-                updated_at=row["updated_at"],
+            )
+        finally:
+            conn.close()
+
+    def find_duplicate_inbound_message(
+        self, thread_id: str, sender_email: str, subject: str, body_text: str
+    ) -> Optional[CommunicationMessage]:
+        """Finds an existing inbound message with identical thread, sender, subject, and body for idempotency."""
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, thread_id, direction, message_id_header, sender_email, recipient_email, subject, body_text, classification_label, prompt_version, created_at
+                FROM communication_messages
+                WHERE thread_id = ? AND direction = 'INBOUND' AND sender_email = ? AND subject = ? AND body_text = ?
+                LIMIT 1
+                """,
+                (thread_id, sender_email, subject, body_text),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return CommunicationMessage(
+                id=row["id"],
+                thread_id=row["thread_id"],
+                direction=row["direction"],
+                message_id_header=row["message_id_header"],
+                sender_email=row["sender_email"],
+                recipient_email=row["recipient_email"],
+                subject=row["subject"],
+                body_text=row["body_text"],
+                classification_label=row["classification_label"],
+                prompt_version=row["prompt_version"],
+                created_at=row["created_at"],
             )
         finally:
             conn.close()

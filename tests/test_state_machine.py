@@ -1,7 +1,4 @@
 import pytest
-import sqlite3
-import tempfile
-import os
 from leadforge.execution_state import EntityStateMachine, InvalidTransitionError
 from leadforge.validator import validate_transition
 

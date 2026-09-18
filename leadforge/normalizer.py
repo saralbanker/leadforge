@@ -9,24 +9,50 @@ _CC_DIGITS = re.sub(r"\D", "", DEFAULT_PHONE_COUNTRY_CODE)
 _LOCAL_DIGITS = 10
 
 
+DUMMY_PHONE_PATTERNS = {
+    "1234567890", "0123456789", "0000000000",
+    "1111111111", "2222222222", "3333333333", "4444444444",
+    "5555555555", "6666666666", "7777777777", "8888888888", "9999999999",
+}
+
+
 def normalize_phone(phone: str) -> str:
     """Standardize phone numbers into clean string formatting for display.
 
-    Removes spaces, dashes, parentheses.  Prepends DEFAULT_PHONE_COUNTRY_CODE
+    Removes spaces, dashes, parentheses. Prepends DEFAULT_PHONE_COUNTRY_CODE
     for bare local-length numbers that have no existing country prefix.
+    Strips 'tel:' URI schemes and single leading trunk zeros.
     Use canonical_phone() for deduplication lookups — not this function.
     """
     if not phone:
         return ""
-    cleaned = re.sub(r"[\s\-\(\)]", "", phone)
+    # Strip URI schemes (tel:, callto:) and parameters (?call_type=)
+    cleaned = str(phone).strip()
+    cleaned = re.sub(r"^(?:tel|callto):/{0,2}", "", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.split("?")[0].split("#")[0]
 
-    # Already has an explicit + prefix — trust it
+    # If multiple numbers are separated by slash or comma, take the primary one
+    if "/" in cleaned:
+        cleaned = cleaned.split("/")[0].strip()
+    if "," in cleaned:
+        cleaned = cleaned.split(",")[0].strip()
+
+    cleaned = re.sub(r"[\s\-\(\)\.]", "", cleaned)
+
+    # Already has an explicit + prefix
     if cleaned.startswith("+"):
+        # Fix +9109825... (trunk zero after country code)
+        if cleaned.startswith(f"+{_CC_DIGITS}0") and len(cleaned) == len(_CC_DIGITS) + 2 + _LOCAL_DIGITS:
+            cleaned = f"+{_CC_DIGITS}" + cleaned[len(_CC_DIGITS) + 2:]
         return cleaned
 
     # Strip leading 00 international prefix → convert to +
     if cleaned.startswith("00") and len(cleaned) > 4:
         return "+" + cleaned[2:]
+
+    # Strip single leading zero before local number (e.g. 09876543210 → 9876543210)
+    if len(cleaned) == _LOCAL_DIGITS + 1 and cleaned.startswith("0"):
+        cleaned = cleaned[1:]
 
     # Bare local-length digits → prepend configured country code
     if len(cleaned) == _LOCAL_DIGITS and cleaned.isdigit():
@@ -47,9 +73,9 @@ def normalize_phone(phone: str) -> str:
 def canonical_phone(phone: str) -> str:
     """Return a digits-only canonical phone string for deduplication.
 
-    All formatting is stripped.  Bare local-length numbers get the
+    All formatting is stripped. Bare local-length numbers get the
     configured country code prepended (controlled by DEFAULT_PHONE_COUNTRY_CODE
-    in config.py).
+    in config.py). Invalid or dummy numbers return empty string.
 
     Examples (default +91 / India)
     --------
@@ -57,12 +83,25 @@ def canonical_phone(phone: str) -> str:
     "9876543210"       → "919876543210"   (10-digit → prepend 91)
     "919876543210"     → "919876543210"
     "00919876543210"   → "919876543210"   (00 prefix stripped)
+    "09876543210"      → "919876543210"   (0 prefix stripped)
     ""                 → ""
     """
     if not phone:
         return ""
-    digits = re.sub(r"\D", "", phone)
+    # Strip URI schemes first
+    raw = str(phone).strip()
+    raw = re.sub(r"^(?:tel|callto):/{0,2}", "", raw, flags=re.IGNORECASE)
+    raw = raw.split("?")[0].split("#")[0]
+    if "/" in raw:
+        raw = raw.split("/")[0].strip()
+    if "," in raw:
+        raw = raw.split(",")[0].strip()
+
+    digits = re.sub(r"\D", "", raw)
     if not digits:
+        return ""
+    # Filter all identical digits (e.g. 0000000000, 9999999999)
+    if len(set(digits)) <= 1 or digits.startswith("000000"):
         return ""
     # Strip leading 00 (international dialling prefix)
     if digits.startswith("00") and len(digits) > 4:
@@ -72,7 +111,13 @@ def canonical_phone(phone: str) -> str:
         digits = digits[1:]
     # Bare local-length number → prepend digits-only country code
     if len(digits) == _LOCAL_DIGITS:
+        if digits in DUMMY_PHONE_PATTERNS:
+            return ""
         digits = _CC_DIGITS + digits
+    elif len(digits) == _LOCAL_DIGITS + len(_CC_DIGITS) and digits.startswith(_CC_DIGITS):
+        local_part = digits[len(_CC_DIGITS):]
+        if local_part in DUMMY_PHONE_PATTERNS:
+            return ""
     return digits
 
 
@@ -184,7 +229,10 @@ def normalize_email(email: str) -> str:
     """Cleans and standardizes email strings."""
     if not email:
         return ""
-    return email.strip().lower()
+    import urllib.parse
+    cleaned = urllib.parse.unquote(str(email)).strip().lower()
+    cleaned = re.sub(r"^mailto:", "", cleaned, flags=re.IGNORECASE).strip()
+    return cleaned
 
 
 def normalize_status(status: str) -> str:

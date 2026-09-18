@@ -1,8 +1,7 @@
 """Red Team Security and Resilience Verification Suite (Phase 1)."""
 
-import pytest
 import asyncio
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 import httpx
 
 from leadforge.enrichment.website import WebsiteProvider

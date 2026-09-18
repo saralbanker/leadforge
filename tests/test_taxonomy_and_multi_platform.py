@@ -1,15 +1,11 @@
 """Unit tests for Hierarchical Industry Taxonomy and Multi-Platform Control Plane integration."""
 
-import pytest
 from leadforge.taxonomy import (
-    INDUSTRY_TAXONOMY,
     get_taxonomy_tree,
-    get_subcategories_for_sector,
     build_specialized_search_query,
     get_service_offerings_for_niche,
 )
 from leadforge.merge import BusinessMerger
-from leadforge.normalizer import normalize_phone
 
 
 def test_taxonomy_tree_structure():

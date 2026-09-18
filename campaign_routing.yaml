@@ -12,7 +12,14 @@ campaigns:
         - "Engineering Works"
         - "Fabricators"
         - "CNC Machining & Precision Engineering"
+        - "Boilers"
+        - "Boiler Manufacturers"
+        - "Industrial Boilers & Pressure Vessels"
+        - "Chemicals"
         - "Chemical & Dyes Manufacturers"
+        - "Chemicals & Intermediates"
+        - "Industrial Valves & Process Equipment"
+        - "Process Equipment"
         - "Plastic Moulding & Polymer Packaging"
         - "Transformer & Electrical Panel Manufacturers"
         - "Diamond Tooling & Laser Cutting"
@@ -21,24 +28,223 @@ campaigns:
         - "Pharmaceutical Packaging Machinery"
         - "Industrial Machinery"
     copy_template:
-      subject: "no website?"
-      body_structure: "{observation_hook}\n\nRight now, someone searching for a supplier like you in {city} is calling your competitor instead - not because they're better, just because they show up and you don't.\n\nWorth 10 minutes to see exactly what you're losing every month?\n\n- Saral"
+      subject:
+        - "website for {business_name}"
+        - "direct website for {business_name}"
+        - "online catalog for {business_name}"
+        - "quick question re: {business_name} catalog"
+        - "dedicated website for {business_name}"
+      body_structure:
+        middles:
+          - "I am Saral Banker from Orvion, a custom software developer based here in Ahmedabad. {observation_hook} I noticed {business_name} lists equipment on IndiaMART, but you don't have your own direct website. Most large industrial buyers and EPC contractors check for an independent website before issuing purchase inquiries. I build clean, custom websites and product catalogs for manufacturers in {city} so clients can browse your technical specs directly."
+          - "I am Saral Banker from Orvion, a custom software developer in Ahmedabad. {observation_hook} Many manufacturers we talk to rely mainly on directory portals like IndiaMART, but lose institutional clients who expect a standalone corporate website. I develop dedicated company websites and digital catalogs for industrial plants in {city} to showcase your equipment directly to buyers."
+          - "I am Saral Banker from Orvion here in Ahmedabad, working as a custom software developer. {observation_hook} While directory listings bring leads, having your own dedicated website establishes direct trust with plant managers and procurement officers. I create custom websites and machine catalogs for engineering units in {city}."
+          - "I am Saral Banker from Orvion, a custom software developer in Ahmedabad. {observation_hook} I help manufacturing businesses in {city} build modern, fast corporate websites so you own your client relationships directly rather than depending only on third-party portals."
+        closings:
+          - "Would you be open to a quick 5-minute call this Thursday, or can I send a brief overview on WhatsApp to this number?"
+          - "Can I send a 2-minute overview on WhatsApp to this number, or would a quick call this week work better?"
+          - "Would you be open to a short 5-minute call to see a few examples of sites I built for manufacturers?"
+          - "Could I share a brief overview on WhatsApp to this number, or would tomorrow morning be better for a quick call?"
+      followup_step2:
+        subject:
+          - "re: {first_subject}"
+          - "rfq inquiries for {business_name}"
+          - "catalog question for {business_name}"
+          - "technical catalog for {business_name}"
+          - "client inquiries in {city}"
+        body_structure:
+          - |
+            wanted to see if you had a moment to think about putting together an rfq page for {business_name}.
+
+            is sharing machine specs online something your team is considering this year?
+          - |
+            following up briefly on the technical catalog idea for your plant in {city}.
+
+            are you currently looking to take on more manufacturing contracts this quarter?
+          - |
+            checking if putting an equipment list and rfq form online would be useful for {business_name}.
+
+            would it help to see a quick sample for your sector?
+          - |
+            wanted to check if direct rfq inquiries from purchasing teams are a priority for {business_name} right now.
+
+            do you have capacity for a few more client orders this month?
+          - |
+            circling back on whether an online catalog makes sense for your plant in {city}.
+
+            would you like me to send over a brief example?
+      followup_step3:
+        subject:
+          - "re: {first_subject}"
+          - "closing the loop: {business_name}"
+          - "final note re: {business_name}"
+        body_structure:
+          - |
+            if an rfq page is not on the radar for {business_name} right now, no problem at all.
+
+            should i check back with you in a few months?
+          - |
+            assuming you are all set for client inquiries in {city} for now.
+
+            would it be better to reconnect next quarter?
+          - |
+            i will assume the timing is not right for {business_name}.
+
+            is this something worth revisiting later in the year?
+          - |
+            no worries if direct rfq inquiries are not a focus for your shop right now.
+
+            should i reach back out down the road?
+          - |
+            sounds like your production schedule is full for the moment.
+
+            would you prefer i follow up in a few months?
 
   - name: "Manufacturing - B2B Dealer & Order Portal"
     target_offer: "Custom B2B Dealer Order Entry & Dispatch Portal"
     criteria:
       has_website: true
+      has_order_flow: false
+      has_contact_form: false
       categories:
         - "Manufacturers"
         - "Manufacturing"
         - "Wholesalers"
         - "Distributors"
+        - "Boilers"
+        - "Boiler Manufacturers"
+        - "Industrial Boilers & Pressure Vessels"
+        - "Chemicals"
         - "Chemical & Dyes Manufacturers"
+        - "Chemicals & Intermediates"
+        - "Industrial Valves & Process Equipment"
+        - "Process Equipment"
         - "Plastic Moulding & Polymer Packaging"
         - "Auto Components & Forging Works"
     copy_template:
-      subject: "orders by WhatsApp?"
-      body_structure: "{observation_hook}\n\nEvery order written down by hand is a chance for a wrong quantity, a missed order, or a dealer who calls back angry.\n\nWorth 10 minutes to see how much that's actually costing you each month?\n\n- Saral"
+      subject:
+        - "inquiry follow-ups for {business_name}"
+        - "new inquiries at {business_name}"
+        - "quick question re: {business_name} inquiries"
+        - "lead follow-up at {business_name}"
+        - "buyer inquiries for {business_name}"
+      body_structure:
+        middles:
+          - "I am Saral Banker from Orvion, a custom software developer based here in Ahmedabad. {observation_hook} Most plants with lean office teams lose orders because incoming inquiries get buried on WhatsApp or forgotten before staff follow up. I build simple automations that route new inquiries straight to your phone and track pending quotes so zero orders slip through."
+          - "I am Saral Banker from Orvion, a custom software developer in Ahmedabad. {observation_hook} Many manufacturing units we talk to find incoming buyer inquiries get delayed before staff can follow up. I build simple automations that notify your team instantly and track quotes so no deals slip away."
+          - "I am Saral Banker from Orvion here in Ahmedabad, working as a custom software developer. {observation_hook} When new inquiries arrive across chat and email, lean factory teams often struggle to stay on top of follow-ups. I set up simple inquiry tracking automations so your team never misses a prospective client."
+          - "I am Saral Banker from Orvion, a custom software developer in Ahmedabad. {observation_hook} I help local manufacturing plants automate their incoming inquiry flow, ensuring every quote request gets logged and followed up without adding extra desk staff."
+        closings:
+          - "Would you be open to a quick 5-minute call this Thursday, or can I send a brief overview on WhatsApp to this number?"
+          - "Can I send a 2-minute overview on WhatsApp to this number, or would a quick call this week work better?"
+          - "Would you be open to a short 5-minute call to see how other plants in {city} automate this?"
+          - "Could I share a brief overview on WhatsApp to this number, or would tomorrow morning be better for a quick call?"
+      body_structure_unverified:
+        middles:
+          - "I am Saral Banker from Orvion, a custom software developer based here in Ahmedabad. I build simple inquiry tracking automations for manufacturers in {city} so incoming buyer requests never get buried before staff follow up."
+          - "I am Saral Banker from Orvion, a custom software developer in Ahmedabad. I build straightforward inquiry routing automations so plants never lose track of pending quote requests."
+          - "I am Saral Banker from Orvion here in Ahmedabad. I help manufacturing businesses in {city} automate their inquiry and quote follow-ups so zero prospective clients slip through."
+          - "I am Saral Banker from Orvion, a custom software developer in Ahmedabad. I set up clean, simple inquiry tracking systems for companies like {business_name} to manage buyer follow-ups without extra paperwork."
+        closings:
+          - "Would you be open to a quick 5-minute call this Thursday, or can I send a brief overview on WhatsApp to this number?"
+          - "Can I share a 2-minute overview on WhatsApp to this number, or would a short call this week work better?"
+          - "Would you be open to a brief 5-minute call to see how this works for {business_name}?"
+          - "Could I share a quick sample link on WhatsApp to this number, or would a brief call be better?"
+      followup_step2:
+        subject:
+          - "re: {first_subject}"
+          - "dealer orders for {business_name}"
+          - "order entry at {business_name}"
+          - "wholesale orders in {city}"
+        body_structure:
+          - |
+            wanted to see if a simple dealer order portal would save your team time at {business_name}.
+
+            how much time does your team spend typing up dealer orders each week?
+          - |
+            following up on the wholesale order entry setup for your distributors in {city}.
+
+            would you be open to seeing a short walkthrough?
+          - |
+            checking if setting up a private catalog for dealer purchase orders is relevant for {business_name}.
+
+            do your distributors mostly call in repeat orders right now?
+          - |
+            wanted to see if reducing manual order entry is something you are looking into for {business_name}.
+
+            would a simple order portal for your distributors be worth a look?
+          - |
+            circling back on whether a dedicated dealer ordering page would help your dispatch team in {city}.
+
+            are repeat orders still coming in across different chat threads?
+        body_structure_unverified:
+          - |
+            wanted to check how {business_name} handles repeat dealer and distributor orders in {city}.
+
+            do your wholesale clients mostly order through whatsapp or phone right now?
+          - |
+            following up to see if order management is something you are looking to simplify for {business_name}.
+
+            are your dealers currently placing orders through an online system or by message?
+          - |
+            checking how your team currently collects and tracks incoming distributor orders for {business_name}.
+
+            would it be worth a short chat to see how our dealer portal works?
+          - |
+            wanted to see if the back-and-forth on wholesale orders is an area you are looking to improve for {business_name}.
+
+            how do your dealers and distributors usually send over their repeat orders?
+          - |
+            circling back to see how your dispatch team in {city} manages dealer reorders.
+
+            is an online order portal something you have looked into for {business_name}?
+      followup_step3:
+        subject:
+          - "re: {first_subject}"
+          - "closing the loop: {business_name}"
+          - "final note re: order flow"
+        body_structure:
+          - |
+            if a dealer order portal is not a priority for {business_name} right now, no problem at all.
+
+            should i check back with you next quarter?
+          - |
+            assuming your current ordering setup is working fine for your team in {city}.
+
+            would it be helpful to reconnect later in the year?
+          - |
+            i will assume dealer reorders are running smoothly for {business_name}.
+
+            should i follow up in a few months?
+          - |
+            no problem at all if changing your order entry workflow is not on the table right now.
+
+            would you prefer i reach back out down the road?
+          - |
+            sounds like your dispatch process is working well as it is.
+
+            is this worth revisiting in the future?
+        body_structure_unverified:
+          - |
+            if order entry is already running smoothly for {business_name}, no worries at all.
+
+            should i check back with you down the road?
+          - |
+            assuming repeat ordering is working well for your distributors in {city} right now.
+
+            would you prefer i follow up in a few months?
+          - |
+            i will assume your ordering process is in good shape for {business_name}.
+
+            would next quarter be a better time to connect?
+          - |
+            no worries if this is not a priority for {business_name} at the moment.
+
+            should i reach out again later this year?
+          - |
+            sounds like your current workflow is working fine for your team.
+
+            would you like me to check back next quarter?
 
   - name: "Campaign A (General No Website)"
     target_offer: "Professional Website Design & Speed Optimization"
@@ -47,13 +253,86 @@ campaigns:
       ssl_valid: false
       max_load_time_seconds: 4.0
     copy_template:
-      subject: "question regarding {business_name}"
-      body_structure: "{observation_hook} Without a fast, mobile-friendly landing page, potential customers searching in {city} will likely end up on competitor profiles. We design clean, high-performance websites for local businesses to lock down local search traffic. Do you take customer inquiries mostly by phone or online?"
+      subject:
+        - "question regarding {business_name}"
+        - "website for {business_name}"
+        - "quick question re: {business_name}"
+        - "searching for {business_name} in {city}"
+        - "{business_name} website in {city}"
+      body_structure:
+        middles:
+          - "When people search for local businesses in {city}, they usually skip listings that do not have a website and click a competitor instead. We build fast, simple web pages that help you capture those searches."
+          - "Without a website for {business_name}, customers looking you up on their phones cannot easily check your services or contact details. We design clean web pages for businesses in {city}."
+          - "Most customers in {city} check a company website before deciding who to call. Setting up a straightforward page for {business_name} makes it easier for new clients to find you directly."
+          - "We help businesses in {city} get a simple, fast website set up so local customers searching on Google find them instead of competitors."
+          - "When someone in {city} searches for your services, having a basic website gives them an immediate way to reach out and view your work."
+          - "Local clients searching on their phone want to see opening hours, service lists, and a direct call button. We build lightweight one-page sites for companies in {city}."
+        closings:
+          - "Do you get most of your new client inquiries by phone or in person?"
+          - "Would you be open to looking at a quick mockup for {business_name}?"
+          - "Are you currently taking on new clients this month?"
+          - "How do most people find out about {business_name} right now?"
+          - "Should I send over a couple of example pages we built for similar businesses?"
+          - "Would a quick 5-minute preview of what your page could look like make sense?"
+      followup_step2:
+        subject:
+          - "re: {first_subject}"
+          - "website for {business_name}"
+          - "quick follow-up re: {business_name}"
+          - "mockup for {business_name}"
+        body_structure:
+          - |
+            wanted to see if having a basic website for {business_name} is something you are considering.
+
+            would it be helpful to see a quick mockup for your business in {city}?
+          - |
+            following up on whether getting a simple page online would help new customers find {business_name}.
+
+            are you currently taking on new clients this month?
+          - |
+            checking if you had a moment to think about a web page for {business_name}.
+
+            should i send over a couple of example pages we built for similar businesses?
+          - |
+            wanted to check if making it easier for local clients in {city} to find {business_name} is a focus right now.
+
+            how do most people find out about your business today?
+          - |
+            circling back on getting a clean web page set up for {business_name}.
+
+            would a 5-minute chat this week make sense?
+      followup_step3:
+        subject:
+          - "re: {first_subject}"
+          - "closing the loop: {business_name}"
+          - "final note re: {business_name}"
+        body_structure:
+          - |
+            if a website is not a priority for {business_name} right now, no problem at all.
+
+            should i check back with you later this year?
+          - |
+            assuming you are getting plenty of direct inquiries in {city} for now.
+
+            would you like me to reconnect next quarter?
+          - |
+            i will assume you have all the new client flow you need for {business_name}.
+
+            is this something worth revisiting in a few months?
+          - |
+            no worries if setting up a web page is not on the agenda right now.
+
+            should i reach back out down the road?
+          - |
+            sounds like you are all set at {business_name} for the moment.
+
+            would next quarter be a better time to check in?
 
   - name: "Campaign B (Booking)"
     target_offer: "Custom Software Integration & Appointment Booking Portals"
     criteria:
       has_website: true
+      has_booking: false
       categories:
         - "Clinics"
         - "Dentists"
@@ -61,14 +340,214 @@ campaigns:
         - "Salons"
         - "Consultants"
     copy_template:
-      subject: "scheduling at {business_name}"
-      body_structure: "{observation_hook} Without an instant booking widget, clients searching for scheduling options often click away. We build custom scheduling portals that integrate directly with your Google Maps profile to reduce drop-off. Do you take bookings online or mostly by phone?"
+      subject:
+        - "scheduling at {business_name}"
+        - "online bookings for {business_name}"
+        - "quick question re: appointments"
+        - "appointment scheduling at {business_name}"
+        - "booking widget for {business_name}"
+      body_structure:
+        middles:
+          - "Without a direct booking link on your site, patients searching after hours often leave and book with another clinic. We build clean appointment calendars that connect directly to your Google listing."
+          - "When patients visit your website in the evening, not having an instant booking option means they have to remember to call the next morning. We set up simple scheduling tools that let clients pick a slot directly."
+          - "Most clients looking for appointments prefer booking a time slot online instead of waiting on the phone. We build straightforward scheduling pages for practices in {city}."
+          - "Adding an online scheduling button lets new clients book slots directly from your website without tying up your staff on phone calls."
+          - "Clients who cannot find an appointment button on your page usually look for another provider in {city} with instant scheduling. We set up fast booking pages tailored for your practice."
+          - "When prospective clients look up your schedule outside office hours, phone-only booking means lost appointments. We install clean mobile booking widgets on existing practice sites."
+        closings:
+          - "Do you take most of your appointments by phone right now?"
+          - "Would you like to see how our appointment calendar looks on mobile?"
+          - "How many appointment calls does your front desk handle on an average day?"
+          - "Would a simple booking calendar for {business_name} be helpful to see?"
+          - "Are you looking to fill more open appointment slots this month?"
+          - "Would you be open to a quick 5-minute demo of our scheduling tool?"
+      body_structure_unverified:
+        middles:
+          - "We build simple online scheduling tools for practices in {city} so clients can book appointments directly from their phone."
+          - "We set up clean appointment booking pages that let patients reserve time slots directly from your website and Google profile."
+          - "Many clinics in {city} still take bookings manually over the phone, while others offer a calendar online. We create easy scheduling portals for local practices."
+          - "We design lightweight booking systems for practices like {business_name} to help reduce phone tag and fill open schedule slots."
+          - "Depending on your current setup, having an instant scheduling link on your website can help capture after-hours patient inquiries."
+          - "We help health and service practices in {city} connect automated appointment slots to their website and search listings."
+        closings:
+          - "Do your clients currently book appointments online or mostly by phone?"
+          - "How does your front desk currently manage incoming appointment requests?"
+          - "Are you taking appointments through an online calendar, or mostly over the phone?"
+          - "Would you be open to seeing a quick demo of how our booking tool works?"
+          - "Is adding an online booking option something you have considered for {business_name}?"
+          - "How do after-hours visitors usually request an appointment with your team?"
+      followup_step2:
+        subject:
+          - "re: {first_subject}"
+          - "scheduling at {business_name}"
+          - "appointments for {business_name}"
+          - "booking widget for {business_name}"
+        body_structure:
+          - |
+            wanted to see if adding an online booking link to your website would help patients in {city} schedule after hours.
+
+            would you like to see how our appointment calendar looks on mobile?
+          - |
+            following up on whether direct appointment scheduling makes sense for {business_name}.
+
+            are you looking to fill more open appointment slots this month?
+          - |
+            checking if reducing phone calls for appointment scheduling is a goal for your team at {business_name}.
+
+            how many booking calls does your front desk handle each day?
+          - |
+            wanted to see if letting clients pick a slot directly from your site would be useful for {business_name}.
+
+            would a simple booking calendar be helpful to see?
+          - |
+            circling back on appointment scheduling for your practice in {city}.
+
+            are you open to a brief chat to see how it works?
+        body_structure_unverified:
+          - |
+            wanted to check how your front desk currently manages appointment requests for {business_name}.
+
+            do your clients book appointments online or mostly by phone right now?
+          - |
+            following up on scheduling for {business_name} in {city}.
+
+            is adding an online booking option something you have considered?
+          - |
+            checking to see if appointment scheduling is an area you are looking to update for {business_name}.
+
+            how does your team currently handle after-hours booking requests?
+          - |
+            wanted to see if a direct scheduling tool would be helpful for {business_name}.
+
+            would you be open to seeing a quick demo of how our booking tool works?
+          - |
+            circling back to see if online scheduling is on the roadmap for your practice in {city}.
+
+            is this worth a short conversation this week?
+      followup_step3:
+        subject:
+          - "re: {first_subject}"
+          - "closing the loop: {business_name}"
+          - "final note re: appointments"
+        body_structure:
+          - |
+            if online scheduling is not something you need for {business_name} right now, no problem at all.
+
+            should i follow up with you in a few months?
+          - |
+            assuming your current booking process is working well for your front desk in {city}.
+
+            would you like me to check back next quarter?
+          - |
+            i will assume your schedule is full at {business_name} for the time being.
+
+            would later in the year be a better time to connect?
+          - |
+            no worries if adding appointment booking is not a focus for your team right now.
+
+            should i reach back out down the road?
+          - |
+            sounds like your front desk workflow is running smoothly as is.
+
+            is this something to revisit in the future?
+        body_structure_unverified:
+          - |
+            if appointment scheduling is already working well for {business_name}, no problem at all.
+
+            should i reconnect with you later in the year?
+          - |
+            assuming your current appointment setup is meeting your needs in {city}.
+
+            would you prefer i check back in a few months?
+          - |
+            i will assume this is not a priority for {business_name} right now.
+
+            should i reach out again next quarter?
+          - |
+            no worries if scheduling is not an area you are looking to change.
+
+            would next quarter be a better time to connect?
+          - |
+            sounds like everything is running fine for your team at {business_name}.
+
+            should i check in with you down the road?
 
   - name: "General Outreach (Digital Performance)"
     target_offer: "Digital Experience & Conversion Rate Optimization"
     criteria:
       has_website: true
     copy_template:
-      subject: "quick question re: {business_name}"
-      body_structure: "{observation_hook} Most local customers searching in {city} browse on their phones before making a decision. We help established businesses improve their online conversion rate and customer inquiry flow. Are you currently taking on new orders this month?"
+      subject:
+        - "quick question re: {business_name}"
+        - "question re: {business_name}"
+        - "website inquiry for {business_name}"
+        - "new inquiries at {business_name}"
+        - "{business_name} in {city}"
+      body_structure:
+        middles:
+          - "Most local customers in {city} look up websites on their phones before reaching out. We help established businesses update their web pages so more visitors turn into direct inquiries."
+          - "When potential clients visit your website, having clear service details and fast contact buttons makes a big difference. We help companies in {city} revamp their websites for better inquiry flow."
+          - "A lot of website traffic drops off if pages take too long to load or forms are hard to use on mobile. We help local businesses in {city} modernize their site layout and contact forms."
+          - "We work with established businesses in {city} to improve website speed and make it easy for new customers to reach out."
+          - "Small changes to page layout and mobile navigation are usually what stands between a visitor reading your page and actually contacting you."
+          - "When prospective clients visit your site from search, a slow mobile layout or buried contact button often sends them back to search results. We help local firms in {city} tune their site flow."
+        closings:
+          - "Are you currently taking on new client projects this month?"
+          - "How do most visitors get in touch with you through your site today?"
+          - "Would it be worth a quick conversation to see a few ideas for {business_name}?"
+          - "Are you currently looking to increase inquiry volume for {business_name}?"
+          - "Should I send over two quick suggestions we had for your website?"
+          - "Would you be open to a 5-minute chat to look at two quick mobile suggestions?"
+      followup_step2:
+        subject:
+          - "re: {first_subject}"
+          - "website question for {business_name}"
+          - "new inquiries at {business_name}"
+          - "quick follow-up: {business_name}"
+        body_structure:
+          - |
+            wanted to see if improving mobile inquiry flow for {business_name} is on your radar this quarter.
 
+            would it be worth a quick conversation to see a few ideas for {business_name}?
+          - |
+            following up on whether updating your website layout in {city} would help bring in more direct inquiries.
+
+            should i send over two quick suggestions we had for your website?
+          - |
+            checking if you had a moment to consider our note about {business_name}'s website.
+
+            are you currently looking to increase inquiry volume this month?
+          - |
+            wanted to see if making your site contact forms easier on mobile is something you are looking into.
+
+            how do most visitors get in touch with you through your site today?
+          - |
+            circling back on whether a few simple website updates make sense for {business_name}.
+
+            would you be open to a 5-minute chat this week?
+      followup_step3:
+        subject:
+          - "re: {first_subject}"
+          - "closing the loop: {business_name}"
+          - "final note re: {business_name}"
+        body_structure:
+          - |
+            if updating the website is not a priority for {business_name} right now, no problem at all.
+
+            would you prefer i check back in a few months?
+          - |
+            assuming everything is running smoothly with your site in {city}.
+
+            should i reach back out next quarter?
+          - |
+            i will assume you are not looking to make website changes for {business_name} at this time.
+
+            would it be helpful to reconnect later in the year?
+          - |
+            no worries if website updates are not on the roadmap right now.
+
+            should i check in with you down the road?
+          - |
+            sounds like you are satisfied with your current website performance.
+
+            is this something worth revisiting in the future?
