@@ -333,15 +333,22 @@ def test_bulk_approve_holds_back_batch_internal_duplicates(tmp_path, monkeypatch
     o1_id, o2_id = str(uuid.uuid4()), str(uuid.uuid4())
     d1_id, d2_id = str(uuid.uuid4()), str(uuid.uuid4())
 
+    envelope_footer = (
+        "\n\nBest,\nSaral Banker, Orvion"
+        "\n\n---\nOrvion\n402 Silicon Square, SG Highway, Ahmedabad, Gujarat 380054, India\n"
+        "Reply STOP to unsubscribe."
+    )
     body_1 = (
-        "I noticed Apex Precision in Denver.\n\n"
-        "We build private order portals for manufacturers and distributors in Denver to cut down repeat order friction.\n\n"
-        "How do your dealers usually send over repeat orders?"
+        "Hi Apex Precision team,\n\n"
+        "I noticed Apex Precision manufactures precision parts in Denver.\n\n"
+        "I came across your listing while reviewing regional suppliers. We build private order portals for manufacturers and distributors in Denver to cut down repeat order friction.\n\n"
+        "How do your dealers usually send over repeat orders right now?" + envelope_footer
     )
     body_2 = (
-        "I saw Acme Steel in Austin.\n\n"
-        "We build private order portals for manufacturers and distributors in Austin to cut down repeat order friction.\n\n"
-        "How do your dealers usually send over repeat orders?"
+        "Hi Acme Steel team,\n\n"
+        "I saw Acme Steel manufactures steel parts in Austin.\n\n"
+        "I came across your listing while reviewing regional suppliers. We build private order portals for manufacturers and distributors in Austin to cut down repeat order friction.\n\n"
+        "How do your dealers usually send over repeat orders right now?" + envelope_footer
     )
 
     conn = sqlite3.connect(db)
@@ -394,15 +401,22 @@ def test_bulk_approve_passes_genuinely_varied_batch(tmp_path, monkeypatch):
     o1_id, o2_id = str(uuid.uuid4()), str(uuid.uuid4())
     d1_id, d2_id = str(uuid.uuid4()), str(uuid.uuid4())
 
+    envelope_footer = (
+        "\n\nBest,\nSaral Banker, Orvion"
+        "\n\n---\nOrvion\n402 Silicon Square, SG Highway, Ahmedabad, Gujarat 380054, India\n"
+        "Reply STOP to unsubscribe."
+    )
     b1 = (
-        "I noticed Apex Precision in Denver.\n\n"
-        "Taking dealer orders over WhatsApp or phone means part numbers get mixed up. We set up simple dealer order portals.\n\n"
-        "Do your distributors call in their repeat orders right now?"
+        "Hi Apex Precision team,\n\n"
+        "I noticed Apex Precision manufactures precision parts in Denver.\n\n"
+        "I came across your listing while reviewing regional suppliers. Taking dealer orders over WhatsApp or phone means part numbers sometimes get mixed up. We set up simple dealer order portals for manufacturing teams.\n\n"
+        "Do your distributors call in their repeat orders right now?" + envelope_footer
     )
     b2 = (
-        "I saw Acme Steel in Austin.\n\n"
-        "When distributors place repeat orders by message, manual entry often causes wrong quantities. We build dedicated order portals.\n\n"
-        "How much time does your team spend typing up dealer orders each day?"
+        "Hi Acme Steel team,\n\n"
+        "I saw Acme Steel exports steel parts from Austin.\n\n"
+        "I found your listing while researching regional manufacturers. When distributors place repeat orders by message, manual entry sometimes causes wrong quantities. We build dedicated order portals for distributor teams.\n\n"
+        "How much time does your team spend typing up dealer orders each day?" + envelope_footer
     )
 
     conn = sqlite3.connect(db)

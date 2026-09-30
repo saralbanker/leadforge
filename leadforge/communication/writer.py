@@ -139,13 +139,14 @@ class LocalLLMEmailWriter:
         Returns:
             Tuple of (subject, body_text)
         """
-        biz_id = context.get("business_id") or context.get("id", "")
-        biz_name = context.get("name", "there")
-        city = context.get("city", "your city")
-        area = context.get("area", "")
-
+        from leadforge.outreach.cleaning import clean_company_name
         from leadforge.outreach.router import CampaignRouter
         router = CampaignRouter()
+
+        biz_id = context.get("business_id") or context.get("id", "")
+        biz_name = clean_company_name(context.get("name", "there"))
+        city = context.get("city", "your city")
+        area = context.get("area", "")
 
         matched_campaign = None
         if campaign_name:
@@ -193,12 +194,14 @@ class LocalLLMEmailWriter:
         if subject.lower().startswith("follow-up") and not subject.startswith("Follow-up"):
             subject = "Follow-up" + subject[9:]
 
-        body = body_tmpl.replace("{business_name}", biz_name).replace("{city}", city).replace("{area}", area).strip()
+        core_body = body_tmpl.replace("{business_name}", biz_name).replace("{city}", city).replace("{area}", area).strip()
 
         settings = self._get_settings()
         if settings:
-            from leadforge.outreach.generator import compile_compliance_footer
-            body = f"{body}{compile_compliance_footer(settings)}"
+            from leadforge.outreach.generator import compose_full_body
+            body = compose_full_body(core_body, biz_name, settings)
+        else:
+            body = f"Hi {biz_name} team,\n\n{core_body}\n\nBest,\nSaral Banker, Orvion"
 
         return subject, body
 

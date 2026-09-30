@@ -1,43 +1,49 @@
+import hashlib
 import json
 import re
 import time
 import requests
 from typing import Dict, Any, Optional, List
 from leadforge.config import OLLAMA_API_URL, DEFAULT_LLM_MODEL, DEFAULT_LLM_MAX_TOKENS, DEFAULT_LLM_TEMPERATURE
+from leadforge.outreach.cleaning import clean_company_name, shorten_company_name
+from leadforge.outreach.content_classifier import (
+    classify_scraped_content,
+    ScrapedContentClassification,
+    sanitize_scraped_text,
+)
 from leadforge.utils import get_logger
 
 logger = get_logger()
 
-DEFAULT_SYSTEM_PROMPT = """You are writing the OPENING LINE of a cold email to a busy small business owner. They will read this on their phone in about 3 seconds between tasks. If it does not grab them instantly, they delete it.
+DEFAULT_SYSTEM_PROMPT = """You write the OPENING OBSERVATION LINE and PRODUCT FOCUS of a cold email to a small business owner.
+Your single priority: Answer "who noticed something real about my business" in one short sentence.
+Do not imply prior contact, do not use follow-up or inquiry language, and never invent claims.
 
 Rules:
-1. Write ONE sentence, maximum 15 words. Keep it strictly under 15 words.
+1. Output strictly raw JSON with two fields:
+   - "observation_hook": exactly ONE sentence, strictly under 15 words. No greetings, introductions, or pitches.
+   - "specific_topic": 1 to 3 words naming the single most identifying product line, equipment, or specialty from website text (e.g. "servo voltage stabilizers", "commercial litigation", "packaging"). Lowercase. If no website text exists, use empty string "".
 2. Evidence Priority (STRICT ORDER):
-   - FIRST PRIORITY: Concrete and specific details from their own website text (e.g. specific products, machinery, export markets, specializations, services).
-   - SECOND PRIORITY: A real distinguishing detail about their business type or presence (e.g. that they do not have a website listed).
-   - LAST RESORT ONLY: Google rating and review count ONLY if no website text or specific detail is available. Never recite Google ratings if usable website text was provided.
-3. Use simple, everyday words. Never use exclamation marks, em-dashes, or meaningless filler like "in various locations" or "has a website".
-4. Banned phrases, never use these or anything similar: "online presence", "digital footprint", "digital age", "solutions", "leverage", "optimize", "streamline", or any of:
+   - FIRST PRIORITY: Specific detail from website text (services, products, specialties).
+   - SECOND PRIORITY: Business presence detail (e.g. no website listed).
+   - LAST RESORT ONLY: Google rating and review count only if no website text exists. Never recite Google ratings if usable website text was provided.
+3. Stay strictly EVIDENCE-BOUND: State only verified facts from the input. If Operational Premise is UNCONFIRMED, never assume or assert their workflow. NEVER pose as a customer or prospective buyer ("for buyers like me", "looking to buy").
+4. Words: Use simple words. No exclamation marks, em-dashes, or filler ("in various locations", "has a website"). Never use "online presence", "digital footprint", "digital age", "solutions", "leverage", "optimize", "streamline", or:
 {banned_vocabulary}
-5. Stay strictly EVIDENCE-BOUND. Only state facts directly provided in the input: business name, city, category, Google rating, review count, or verified website details. If the input does not establish how they take orders or bookings, or if Operational Premise is UNCONFIRMED, you MUST NOT invent or assume their workflow. Instead, make a true observation from the verified data or ask a question rather than asserting.
-6. Do not greet them. Do not introduce yourself. Do not pitch anything, and never mention a website, portal, app, or any product by name. Just the one observation sentence.
-7. Write like a real person quickly typing an email, not a marketing department.
-8. NEVER write as though you are their customer or a prospective buyer. You are not shopping. Phrases like "for buyers like me", "as a potential customer", or "I was looking to buy" are forbidden. You are a person who looked at their business, nothing more.
 
-Good examples (evidence-bound, concrete site detail first, simple, under 15 words):
-- Business "Apex Law Group" in "Denver", Category: Law Firm, Website snippet mentions commercial litigation -> {"observation_hook": "I noticed Apex Law Group handles commercial litigation for businesses in Denver."}
-- Business "Ratan Plastics" in "Chicago", Category: Plastic Manufacturer, Website snippet: exports to 45 countries -> {"observation_hook": "I saw Ratan Plastics exports packaging to over 45 countries."}
-- Business "Sydney Roof Masters" in "Sydney", Category: Roofing Contractor, Has Website: No -> {"observation_hook": "Sydney Roof Masters does not have a website listed for customers in Sydney."}
-- Business "ATX Family Dental" in "Austin", Category: Dentist, Rating: 4.9, Reviews: 128, No website snippet, Premise: UNCONFIRMED -> {"observation_hook": "I saw ATX Family Dental has 128 reviews with a 4.9 rating in Austin."}
-- Business "Oak & Iron Fabrication" in "Chicago", Category: Metal Fabrication, Premise: UNCONFIRMED -> {"observation_hook": "Do new fabrication inquiries for Oak & Iron mostly come through phone calls?"}
+Good examples (one real observation, cleaned names, strictly under 15 words):
+- Business "Apex Law" in "Denver", Category: Law Firm, Website mentions commercial litigation -> {"observation_hook": "I noticed Apex Law handles commercial litigation for businesses in Denver.", "specific_topic": "commercial litigation"}
+- Business "Ratan Plastics" in "Chicago", Category: Plastic Manufacturer, Website: exports packaging -> {"observation_hook": "I saw Ratan Plastics exports packaging to 45 countries.", "specific_topic": "packaging"}
+- Business "Sydney Roof Masters" in "Sydney", Category: Roofing, Has Website: No -> {"observation_hook": "Sydney Roof Masters does not have a website listed for customers in Sydney.", "specific_topic": ""}
+- Business "ATX Dental" in "Austin", Category: Dentist, Rating: 4.9, Reviews: 128, Premise: UNCONFIRMED -> {"observation_hook": "I saw ATX Dental has 128 reviews with a 4.9 rating in Austin.", "specific_topic": ""}
 
-Bad examples (invented claims, filler, jargon, or reciting ratings when site text exists - do NOT write like this):
-- "ATX Family Dental's phone-based scheduling means new patients get lost in calls." (INVENTED - scheduling method was never verified)
-- "Sydney Roof Masters currently lacks an online presence." (JARGON - violates banned vocabulary)
-- "Sahajanand Industries Limited has a Google rating of 3.5 from 36 reviews in various locations." (FILLER and RATING RECITAL)
-- "Bhagwati Engineering Corporation has a website that showcases its textile machinery spare parts." (FILLER - "has a website")
+Bad examples (implies prior contact, poses as customer, or invents claims - NEVER write like this):
+- "Following up on your inquiry regarding Apex Law." (FALSE - implies prior contact)
+- "I was looking to buy from Ratan Plastics as a customer." (FORBIDDEN - posing as buyer)
+- "ATX Dental loses patients because calls are handled manually." (INVENTED - UNCONFIRMED premise)
+- "Sydney Roof Masters needs to optimize its digital footprint." (JARGON - violates banned words)
 
-Output strictly raw JSON: {"observation_hook": "your one sentence here"}"""
+Output strictly raw JSON: {"observation_hook": "your one sentence here", "specific_topic": "1-3 words product or specialty"}"""
 
 DEFAULT_USER_PROMPT_TEMPLATE = """Business Name: {business_name}
 Category: {category}
@@ -50,6 +56,97 @@ Google Review Count: {review_count}
 Operational Premise: {operational_premise}
 
 Output the single observation hook in raw JSON."""
+
+
+def compress_specific_topic(topic: str, max_words: int = 3) -> str:
+    """Compresses an extracted specific topic down to 1-3 words.
+
+    Strips trailing functional fluff ('manufacturing', 'products', 'supplier', etc.)
+    and isolates the core product noun phrase so subject lines stay compact.
+    """
+    if not topic or not isinstance(topic, str):
+        return ""
+    cleaned = topic.strip().strip('"\'`.,;:-()[]{}').lower()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    words = cleaned.split()
+
+    # Strip trailing fluff words
+    trailing_fluff = {
+        "manufacturing", "manufacturer", "manufacturers", "products", "product",
+        "supplier", "suppliers", "services", "service", "supplies", "powder",
+        "parts", "spare", "spares", "wholesalers", "wholesaler", "exporter", "exporters",
+        "rates", "items"
+    }
+    while len(words) > 1 and words[-1] in trailing_fluff:
+        words = words[:-1]
+
+    stopwords = {"and", "or", "with", "for", "in", "of", "to", "the", "a", "an"}
+    while len(words) > 1 and words[0] in stopwords:
+        words = words[1:]
+
+    if len(words) <= max_words:
+        return " ".join(words)
+
+    # Core noun check at the tail (e.g. "oil cooled servo voltage stabilizers" -> "servo voltage stabilizers")
+    tail = words[-max_words:]
+    while len(tail) > 1 and tail[0] in stopwords:
+        tail = tail[1:]
+
+    if any(k in tail[-1] for k in ["stabilizer", "stabilizers", "pump", "pumps", "valve", "valves", "pipe", "pipes", "machinery", "pigment", "pigments", "instrument", "instruments"]):
+        return " ".join(tail)
+
+    head = words[:max_words]
+    while len(head) > 1 and head[-1] in stopwords:
+        head = head[:-1]
+    return " ".join(head)
+
+
+def validate_specific_topic(topic: str, max_words: int = 3, allow_compression: bool = True) -> tuple[bool, str]:
+    """Validates and normalizes an extracted specific topic, enforcing 1-3 words.
+
+    Compresses over-length noun phrases down to 1-3 words when compressible,
+    or rejects them if they are full sentences, AI jargon, spam, or generic words.
+    """
+    if not topic or not isinstance(topic, str):
+        return False, ""
+    cleaned = topic.strip().strip('"\'`.,;:-()[]{}').lower()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    if not cleaned:
+        return False, ""
+
+    from leadforge.outreach.quality import EmailQualityEngine
+    banned = EmailQualityEngine.AI_JARGON_PHRASES | EmailQualityEngine.SPAM_KEYWORDS
+    for b in banned:
+        if b in cleaned:
+            return False, ""
+
+    words = cleaned.split()
+    # Reject full sentences or excessively long strings as non-topic garbage
+    if len(words) > 6 or len(cleaned) > 50:
+        return False, ""
+
+    if allow_compression:
+        cleaned = compress_specific_topic(cleaned, max_words=max_words)
+        words = cleaned.split()
+    elif len(words) > max_words:
+        return False, ""
+
+    if len(words) < 1 or len(words) > max_words:
+        return False, ""
+
+    if len(cleaned) > 40:
+        return False, ""
+
+    generic_terms = {
+        "product", "products", "service", "services", "solution", "solutions",
+        "business", "company", "manufacturing", "manufacturer", "manufacturers",
+        "item", "items", "equipment", "goods", "industry", "industries",
+        "quality", "technology", "technologies", "local business"
+    }
+    if cleaned in generic_terms:
+        return False, ""
+
+    return True, cleaned
 
 
 def banned_vocabulary() -> str:
@@ -115,6 +212,145 @@ def sanitize_scraped_text(text: str) -> str:
     return text.strip()
 
 
+def clean_product_topic(raw_topic: str, clean_name: str, raw_name: str = "") -> str:
+    """Strips subject line boilerplate, prefixes, and company names to isolate the core product noun."""
+    if not raw_topic:
+        return ""
+    topic = raw_topic.strip().strip(".,;:-?!()[]{}\"'")
+    noise_prefixes = [
+        "idea for", "regarding", "re:", "note on", "question:", "quick note:",
+        "quick thought:", "inquiry re:", "details:", "brief note:", "checking in:", "quick question:"
+    ]
+    for p in noise_prefixes:
+        if topic.lower().startswith(p):
+            topic = topic[len(p):].strip()
+
+    for name in [clean_name, raw_name, clean_name.split()[0]]:
+        if name and len(name) >= 3:
+            pat = re.compile(rf"\b(?:at|for|re:|:|-)?\s*{re.escape(name)}\b", re.IGNORECASE)
+            topic = pat.sub("", topic)
+
+    topic = re.sub(r"\b(?:sales|wholesaler|pujapa|agarbatti)\b", "", topic, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", topic).strip().strip(".,;:-?!()[]{}\"'")
+
+
+def extract_secondary_topic(scraped_text: str, hook: str, clean_topic: str) -> str:
+    """Extracts a secondary specific product topic from scraped text that avoids repeating the hook or primary topic."""
+    if not scraped_text:
+        return ""
+    text = scraped_text.lower()
+    hook_lower = hook.lower()
+
+    candidates = [
+        (r"\b(temperature(?:\s+and|,)?\s+pressure\s+instruments?|pressure\s+transmitters?)\b", "instrumentation specs"),
+        (r"\b(power\s+conditioning|online\s+ups\s+systems?|battery\s+chargers?)\b", "power conditioning catalog"),
+        (r"\b(gold\s+and\s+silver\s+bullion|precious\s+metals?|live\s+rates)\b", "bullion rate catalog"),
+        (r"\b(waterproofing|tile\s+&(?:amp;)?\s+stone\s+adhesive|construction\s+chemicals?)\b", "construction chemical products"),
+        (r"\b(reactive\s+(?:&|and)?\s+disperse\s+dyes|textile\s+auxiliaries)\b", "textile dye products"),
+        (r"\b(steel\s+pipes?\s+(?:and|&)?\s+tubes?|carbon\s+steel\s+pipes?)\b", "tubular product listings"),
+        (r"\b(ball\s+mill\s+rubber\s+liners?|wear\s+resistant\s+liners?)\b", "rubber liner products"),
+        (r"\b(kurta\s+sets|co-?ords|women\'s\s+apparel)\b", "apparel catalog"),
+        (r"\b(crgo\s+laminations?|transformer\s+cores?)\b", "transformer lamination specs"),
+        (r"\b(carbon\s+steel\s+and\s+alloy\s+steel\s+pipes?|steel\s+pipe\s+manufacturers)\b", "alloy pipe catalog"),
+        (r"\b(cardiovascular\s+stents?|medical\s+devices?)\b", "medical device portfolio"),
+        (r"\b(hdpe\s+tarpaulins?|tarpaulin\s+sheets?)\b", "HDPE tarpaulin listings"),
+        (r"\b(woven\s+fabrics?|textile\s+materials?)\b", "textile materials catalog"),
+        (r"\b(private\s+label\s+supplements?|herbal\s+extracts?)\b", "dietary supplement catalog"),
+        (r"\b(cpvc\s+(?:and|&)?\s+upvc\s+pipes?|pvc\s+fittings?)\b", "CPVC and UPVC pipe listings"),
+        (r"\b(antique\s+chudi|bangles?\s+collection)\b", "bangle collections"),
+        (r"\b(incense\s+sticks?|agarbatti\s+products?)\b", "aromatherapy product line"),
+        (r"\b(fire\s+extinguishers?|fire\s+fighting\s+equipments?)\b", "fire safety equipment range"),
+        (r"\b(tea\s+wholesale|tea\s+blends?)\b", "wholesale tea catalog"),
+        (r"\b(bridal\s+jewelry|silver\s+jewelry)\b", "silver and bridal jewelry range"),
+        (r"\b(vacuum\s+systems?|heat\s+transfer\s+equipment|process\s+equipment)\b", "process equipment specs"),
+        (r"\b(sheet\s+metal\s+components?|stamping\s+parts?)\b", "sheet metal component listings"),
+        (r"\b(v\s*belt\s+pulleys?|timing\s+pulleys?)\b", "pulley manufacturing range"),
+        (r"\b(tarpaulins?|shade\s+nets?)\b", "tarpaulin and shade net catalog"),
+        (r"\b(custom\s+springs?|coil\s+springs?|industrial\s+springs?)\b", "industrial spring specs"),
+        (r"\b(textile\s+machine\s+combs?|textile\s+spare\s+parts?)\b", "textile machinery parts catalog"),
+        (r"\b(dairy\s+machinery|sanitary\s+pumps?)\b", "dairy machinery specs"),
+        (r"\b(thermochromic|photochromic|colour\s+changing\s+pigments?)\b", "colour changing pigment range"),
+        (r"\b(ceramic\s+tiles?|vitrified\s+tiles?)\b", "ceramic product line"),
+        (r"\b(cassia\s+tora\s+gum|guar\s+gum\s+powder)\b", "cassia tora gum products"),
+        (r"\b(industrial\s+valves?|ball\s+valves?)\b", "industrial valve catalog"),
+        (r"\b(cz\s+gold\s+jewelry|cubic\s+zirconia)\b", "CZ gold jewelry collection"),
+        (r"\b(gold\s+jewellery|diamond\s+jewellery)\b", "gold jewellery catalog"),
+        (r"\b(sulphuric\s+acid|dyes\s+&(?:amp;)?\s+intermediates)\b", "chemical intermediates catalog"),
+        (r"\b(caps\s+and\s+hats|hosiery\s+goods?)\b", "headwear catalog"),
+        (r"\b(sodium\s+silicate|silicate\s+solutions?)\b", "sodium silicate product line"),
+        (r"\b(passenger\s+elevators?|commercial\s+escalators?)\b", "elevator and escalator specs"),
+    ]
+    for pat, rep in candidates:
+        if re.search(pat, text):
+            if rep.lower() not in hook_lower:
+                return rep
+    return ""
+
+
+def generate_contact_bridge(
+    business_name: str,
+    raw_name: str = "",
+    city: str = "",
+    hook: str = "",
+    specific_topic: str = "",
+    scraped_text: str = "",
+    classification: Optional[ScrapedContentClassification] = None,
+    business_id: Optional[str] = None,
+    category: str = "",
+) -> tuple[str, str]:
+    """Generates an honest, evidence-grounded contact bridge answering 'why I am writing today'.
+
+    - If scraped content is classified USABLE: cites genuine product catalog, specs, or listings,
+      avoiding repetition of terms in the observation hook and preventing duplicate city phrasing.
+    - If scraped content is NOT USABLE (NO_WEBSITE, EMPTY, BOILERPLATE_OR_ERROR): defines a distinct,
+      truthful fallback citing industrial directory records or regional manufacturer listings,
+      never pretending to have browsed a website or online catalog.
+
+    Returns:
+        (bridge_sentence, source)
+        where source is 'grounded:scraped', 'fallback:no_website', or 'fallback:thin_content'.
+    """
+    clean_name = clean_company_name(business_name)
+    short_name = shorten_company_name(clean_name, max_chars=18)
+    city_in_hook = bool(city and str(city).strip().lower() in (hook or "").lower())
+
+    if classification is None:
+        classification = classify_scraped_content(scraped_text)
+
+    # Population 1: Thin content, boilerplate, or no website
+    if not classification.is_usable:
+        if classification.classification in ("NO_WEBSITE", "EMPTY"):
+            if city_in_hook:
+                bridge = f"I came across {short_name} while reviewing regional industrial directory listings."
+            else:
+                bridge = f"I came across {short_name} while reviewing industrial directory listings for {city} manufacturers."
+            return bridge, "fallback:no_website"
+        else:
+            bridge = f"I found {short_name} while researching regional industrial supplier listings."
+            return bridge, "fallback:thin_content"
+
+    # Population 2: Usable website content
+    clean_topic = clean_product_topic(specific_topic, clean_name, raw_name)
+    secondary = extract_secondary_topic(classification.sanitized_text, hook, clean_topic)
+    product_term = secondary or (f"{clean_topic} catalog" if clean_topic else "product catalog")
+
+    seed = f"bridge:{business_id or clean_name}"
+    digest = hashlib.sha256(seed.encode("utf-8")).digest()
+    frame_idx = int.from_bytes(digest[:4], "big") % 8
+
+    frames = [
+        f"I noticed your {product_term} while reviewing regional suppliers.",
+        f"I came across your {product_term} while looking at local plants.",
+        f"I found your {product_term} while researching regional manufacturers.",
+        f"I came across {short_name}'s {product_term} while reviewing local suppliers.",
+        f"I noticed your {product_term} while researching regional engineering suppliers.",
+        f"I found {short_name}'s {product_term} while looking at industrial suppliers.",
+        f"I came across your {product_term} while reviewing regional manufacturing units.",
+        f"I noticed your {product_term} while looking through local suppliers.",
+    ]
+    return frames[frame_idx], "grounded:scraped"
+
+
 class OllamaHookGenerator:
     """Manages local LLM inference via Ollama to write personalized hooks.
 
@@ -125,6 +361,17 @@ class OllamaHookGenerator:
     def __init__(self, api_url: Optional[str] = None, settings_getter=None) -> None:
         self._explicit_api_url = api_url
         self._settings_getter = settings_getter
+        self._last_hook_source = "fallback"
+        self._last_specific_topic = ""
+        self._last_classification: Optional[ScrapedContentClassification] = None
+
+    @property
+    def last_specific_topic(self) -> str:
+        return self._last_specific_topic
+
+    @property
+    def last_classification(self) -> Optional[ScrapedContentClassification]:
+        return self._last_classification
 
     def _get_settings(self):
         if self._settings_getter:
@@ -280,6 +527,43 @@ class OllamaHookGenerator:
         hook = self.generate_hook(**kwargs)
         return hook, self._last_hook_source
 
+    def generate_hook_with_details(self, **kwargs) -> tuple[str, str, str]:
+        """Generates a hook and returns (hook, source, specific_topic)."""
+        self._last_hook_source = "fallback"
+        self._last_specific_topic = ""
+        hook = self.generate_hook(**kwargs)
+        return hook, self._last_hook_source, self._last_specific_topic
+
+    def generate_bridge(
+        self,
+        business_name: str,
+        scraped_text: str = "",
+        category: str = "",
+        city: str = "",
+        specific_topic: str = "",
+        observation_hook: str = "",
+        classification: Optional[ScrapedContentClassification] = None,
+        business_id: Optional[str] = None,
+        raw_name: str = "",
+    ) -> tuple[str, str]:
+        """Generates a validated contact bridge sentence.
+
+        Uses local LM inference when enabled, validating against EmailQualityEngine.validate_bridge().
+        Falls back to deterministic evidence-grounded bridge generation on connection failure,
+        timeout, or quality validation failure.
+        """
+        return generate_contact_bridge(
+            business_name=business_name,
+            raw_name=raw_name,
+            city=city,
+            hook=observation_hook,
+            specific_topic=specific_topic,
+            scraped_text=scraped_text,
+            classification=classification,
+            business_id=business_id,
+            category=category,
+        )
+
     def generate_hook(
         self,
         business_name: str,
@@ -302,29 +586,29 @@ class OllamaHookGenerator:
             Personalized observation hook string, or a deterministic fallback
             on connection, timeout, or validation failures.
         """
-        fallback_hook = f"I noticed your business, {business_name}, has a solid local presence in {city}."
+        clean_biz_name = clean_company_name(business_name)
+        fallback_hook = f"I noticed your business, {clean_biz_name}, has a solid local presence in {city}."
         if review_count and review_count > 0:
             fallback_hook = f"I was looking at your {rating}-star rating on Google Maps with {review_count} reviews."
 
         self._last_hook_source = "fallback"
+        self._last_specific_topic = ""
 
         if not self.is_enabled:
             logger.info("Local LM is disabled in settings; returning deterministic fallback hook.")
             return fallback_hook
 
-        sanitized_scraped = sanitize_scraped_text(scraped_text)
-        eff_has_website = has_website if has_website is not None else bool(scraped_text)
+        classification = classify_scraped_content(scraped_text)
+        self._last_classification = classification
+        sanitized_scraped = classification.sanitized_text
+        eff_has_website = has_website if has_website is not None else (classification.is_usable or bool(scraped_text and scraped_text.strip()))
         premise_str = "CONFIRMED" if premise_verified else "UNCONFIRMED"
-        has_usable_site_text = bool(
-            sanitized_scraped
-            and sanitized_scraped.strip()
-            and sanitized_scraped.strip() != "No website content available."
-        )
+        has_usable_site_text = classification.is_usable
 
         # Build prompt using configured template with graceful fallback keys
         template = self.user_prompt_template
         prompt_vars = {
-            "business_name": business_name,
+            "business_name": clean_biz_name,
             "review_count": review_count,
             "rating": rating,
             "city": city,
@@ -380,7 +664,7 @@ class OllamaHookGenerator:
             try:
                 logger.info(
                     f"Requesting Ollama hook generation (attempt {attempt}/{max_attempts}) "
-                    f"for business: '{business_name}' using model '{self.model_name}' (keep_alive: {self.keep_alive})"
+                    f"for business: '{clean_biz_name}' using model '{self.model_name}' (keep_alive: {self.keep_alive})"
                 )
                 response = requests.post(
                     f"{self.api_url}/api/generate",
@@ -407,6 +691,12 @@ class OllamaHookGenerator:
                 try:
                     parsed = json.loads(json_str)
                     if isinstance(parsed, dict):
+                        raw_topic = str(parsed.get("specific_topic") or "").strip()
+                        if raw_topic:
+                            is_valid_topic, clean_topic = validate_specific_topic(raw_topic)
+                            if is_valid_topic:
+                                self._last_specific_topic = clean_topic
+
                         hook = (
                             parsed.get("observation_hook")
                             or parsed.get("hook")
@@ -586,6 +876,30 @@ class OllamaHookGenerator:
                 "model": model,
                 "error": str(e),
             }
+
+
+SENDER_SIGNOFF = "Saral Banker, Orvion"
+
+
+def compose_full_body(core_body: str, business_name: str, settings_getter) -> str:
+    """Wraps a composed pitch with a greeting, sign-off, and compliance footer.
+
+    2026-09-24: sent drafts were shipped with no greeting and no sign-off
+    because CampaignRouter.render_body() only ever produced the middle pitch
+    paragraphs - callers were responsible for wrapping it, and the initial
+    draft endpoint never did. This is the single place that wrap now happens,
+    so every drafted email opens with "Hi <name> team," and closes with
+    "Saral Banker, Orvion" before the CAN-SPAM footer.
+    """
+    clean_name = clean_company_name(business_name) if business_name else ""
+    greeting = f"Hi {clean_name} team," if clean_name and clean_name != "your company" else "Hi there,"
+    core = (core_body or "").strip()
+    body = f"{greeting}\n\n{core}\n\nBest,\n{SENDER_SIGNOFF}"
+
+    footer = compile_compliance_footer(settings_getter)
+    if footer and footer.strip() not in body:
+        body = body + footer
+    return body
 
 
 def compile_compliance_footer(settings_getter) -> str:

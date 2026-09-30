@@ -18,7 +18,7 @@ cd "$REPO" || exit 1
 
 {
   echo "==================== $(date -Is) ===================="
-  timeout 10800 python scripts/daily_outreach.py --pairs 4
+  timeout 10800 python scripts/daily_outreach.py --pairs 4 --max-sends 3
   echo "exit=$? at $(date -Is)"
 } >>"$LOG" 2>&1
 

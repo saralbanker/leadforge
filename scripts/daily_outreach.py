@@ -110,8 +110,11 @@ def ensure_server() -> bool:
     return False
 
 
+DEFAULT_SCHEDULED_SEND_CAP = 3  # Sized conservatively for unattended runs (max 3 leads per morning)
+
+
 def ensure_compliance() -> bool:
-    """Refuse to send commercial mail without a physical postal address.
+    """Refuse to send commercial mail without a valid, genuine physical postal address.
 
     US CAN-SPAM and Canadian CASL both require one, and the enabled markets are
     US, UK and Canada. A home address satisfies this; an empty footer does not.
@@ -119,11 +122,31 @@ def ensure_compliance() -> bool:
     message's purpose is commercial.
     """
     from leadforge.repositories.settings import SettingsCache
+    from leadforge.outreach.compliance import validate_postal_address
     postal = SettingsCache().get_str("outreach.footer_postal_address", "").strip()
-    if not postal:
-        log("preflight", "no outreach.footer_postal_address set - required by CAN-SPAM/CASL")
+    is_valid, reason = validate_postal_address(postal)
+    if not is_valid:
+        log("preflight", f"CAN-SPAM compliance check failed: {reason}")
         return False
+    log("preflight", f"CAN-SPAM physical postal address verified: {postal[:30]}...")
     return True
+
+
+def ensure_content_circuit_breaker() -> bool:
+    """Refuse to proceed if the content circuit breaker has been tripped."""
+    from leadforge.database import get_db_connection
+    from leadforge.repositories.settings import SettingsCache
+    from leadforge.outreach.circuit_breaker import is_content_circuit_breaker_tripped
+    conn = get_db_connection()
+    try:
+        tripped, reason = is_content_circuit_breaker_tripped(conn, SettingsCache())
+        if tripped:
+            log("abort", f"CONTENT CIRCUIT BREAKER TRIPPED: {reason}")
+            log("abort", "Automated sending halted. Human inspection required. Clear via 'python scripts/daily_outreach.py --clear-breaker'")
+            return False
+        return True
+    finally:
+        conn.close()
 
 
 def ensure_smtp() -> bool:
@@ -176,6 +199,11 @@ def pending_targets(limit: int) -> list[str]:
         WHERE b.contact_email IS NOT NULL AND b.contact_email != ''
           AND b.is_suppressed = 0 AND b.deleted_at IS NULL AND o.deleted_at IS NULL
           AND d.id IS NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM email_drafts ed
+              WHERE LOWER(ed.recipient_email) = LOWER(b.contact_email)
+                AND ed.status IN ('PENDING_APPROVAL', 'APPROVED', 'QUEUED', 'SENT', 'FAILED')
+          )
         ORDER BY o.score DESC
         LIMIT ?
         """,
@@ -254,14 +282,18 @@ def stage_replies() -> dict:
         return {}
 
 
-def stage_send() -> int:
-    r = httpx.post(f"{API}/api/outreach/deliver", timeout=1800)
+def stage_send(max_sends: Optional[int] = None) -> int:
+    params = {"wait": "true"}
+    if max_sends is not None:
+        params["max_sends"] = max_sends
+    r = httpx.post(f"{API}/api/outreach/deliver", params=params, timeout=1800)
     if r.status_code != 200:
         log("send", f"failed {r.status_code} {r.text[:140]}")
         return 0
     data = r.json()
-    log("send", str(data)[:220])
-    return int(data.get("sent_count", data.get("sent", 0)) or 0)
+    sent_cnt = int(data.get("sent_count", data.get("sent", 0)) or 0)
+    log("send", f"successfully delivered {sent_cnt} email(s) (capped at {max_sends})")
+    return sent_cnt
 
 
 def report() -> None:
@@ -295,7 +327,29 @@ def main() -> int:
     ap.add_argument("--pairs", type=int, default=4)
     ap.add_argument("--no-send", action="store_true")
     ap.add_argument("--skip-leads", action="store_true")
+    ap.add_argument(
+        "--max-sends",
+        type=int,
+        default=None,
+        help="Hard maximum sends for this run (overrides outreach.scheduled_send_cap)",
+    )
+    ap.add_argument(
+        "--clear-breaker",
+        action="store_true",
+        help="Clear the content circuit breaker after human review",
+    )
     args = ap.parse_args()
+
+    if args.clear_breaker:
+        from leadforge.database import get_db_connection
+        from leadforge.outreach.circuit_breaker import clear_content_circuit_breaker
+        conn = get_db_connection()
+        try:
+            clear_content_circuit_breaker(conn, cleared_by="cli_operator")
+            log("breaker", "Content circuit breaker cleared by operator.")
+            return 0
+        finally:
+            conn.close()
 
     log("start", f"daily outreach run ({time.strftime('%Y-%m-%d %H:%M')})")
 
@@ -305,8 +359,10 @@ def main() -> int:
     if not ensure_server():
         log("abort", "API unavailable.")
         return 2
+    if not args.no_send and not ensure_content_circuit_breaker():
+        return 4
     if not args.no_send and not ensure_compliance():
-        log("abort", "Refusing to send: no physical postal address in the compliance "
+        log("abort", "Refusing to send: invalid or missing physical postal address in the compliance "
                      "footer. Set outreach.footer_postal_address, then rerun.")
         return 3
     if not args.no_send and not ensure_smtp():
@@ -320,35 +376,39 @@ def main() -> int:
     from leadforge.repositories.settings import SettingsCache
     from leadforge.outreach.ramp import delivery_allowance
     conn = get_db_connection()
-    allowance, reason = delivery_allowance(conn, SettingsCache())
+    settings_cache = SettingsCache()
+    allowance, reason = delivery_allowance(conn, settings_cache)
     conn.close()
-    log("budget", reason)
+
+    scheduled_cap = settings_cache.get_int("outreach.scheduled_send_cap", DEFAULT_SCHEDULED_SEND_CAP)
+    configured_run_cap = args.max_sends if args.max_sends is not None else scheduled_cap
+    effective_run_cap = min(configured_run_cap, allowance)
+    log("budget", f"daily allowance: {reason}")
+    log("budget", f"per-run send cap: {effective_run_cap} (cap={configured_run_cap}, allowance={allowance})")
 
     if not args.skip_leads:
         stage_leads(args.pairs)
 
-    # Follow-ups first: they are real sends against the same allowance, and a
-    # due second touch is worth more than an extra cold first touch.
+    # Follow-ups first: they are real sends against the same allowance
     followed_up = 0
     if args.no_send:
         log("followup", "skipped (--no-send)")
-    elif allowance <= 0:
-        log("followup", f"skipped: {reason}")
+    elif effective_run_cap <= 0:
+        log("followup", f"skipped: run cap or allowance is zero ({reason})")
     else:
         followed_up = stage_followups()
 
-    # Keep a small surplus of approved drafts so a few quality rejections do not
-    # leave the day short, but do not mass-generate copy that will go stale.
-    remaining = max(allowance - followed_up, 0)
+    # Bounded by per-run cap remaining
+    remaining = max(effective_run_cap - followed_up, 0)
     stage_drafts(max(remaining * 2, 10))
     stage_approve()
 
     if args.no_send:
         log("send", "skipped (--no-send)")
     elif remaining <= 0:
-        log("send", f"skipped: allowance spent on follow-ups ({reason})")
+        log("send", f"skipped: per-run cap ({effective_run_cap}) satisfied by follow-ups or allowance zero ({reason})")
     else:
-        stage_send()
+        stage_send(max_sends=remaining)
 
     report()
     log("done", "run complete")

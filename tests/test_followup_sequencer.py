@@ -485,9 +485,11 @@ def test_followup_copy_differs_from_touch1_and_passes_bans():
     assert body3 != touch1_body
     assert body2 != body3
 
-    # Must be shorter than touch 1 (count words before compliance footer)
-    core2 = body2.split("---")[0].strip()
-    core3 = body3.split("---")[0].strip()
+    # Must be shorter than touch 1 (count words before the compliance footer,
+    # greeting, and sign-off - see EmailQualityEngine._core_body / P0-3).
+    from leadforge.outreach.quality import EmailQualityEngine
+    core2 = EmailQualityEngine._core_body(body2)
+    core3 = EmailQualityEngine._core_body(body3)
     core1 = touch1_body.split("---")[0].strip()
     assert len(core2.split()) < len(core1.split())
     assert len(core3.split()) < len(core1.split())

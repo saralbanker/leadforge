@@ -63,3 +63,15 @@ def test_each_tier_independently_ignores_dead_drafts():
     assert is_duplicate_outreach(biz_id) is False                      # tier 1: business
     assert is_duplicate_outreach(str(uuid.uuid4()), email=email) is False   # tier 2: address
     assert is_duplicate_outreach(str(uuid.uuid4()), domain="acme.example") is False  # tier 3: domain
+
+
+def test_recipient_email_dedup_across_different_businesses():
+    """Verify that when two different businesses share an email (e.g. Bhagwati Engineering),
+    is_duplicate_outreach blocks drafting for the second business."""
+    biz_a, email = _seed("APPROVED")
+    biz_b = str(uuid.uuid4())
+
+    # Tier 2 check must block biz_b because email is already used in a live draft
+    assert is_duplicate_outreach(biz_b, email=email, domain="different.example") is True
+    # Different email for biz_b is not blocked
+    assert is_duplicate_outreach(biz_b, email="unique@different.example", domain="different.example") is False

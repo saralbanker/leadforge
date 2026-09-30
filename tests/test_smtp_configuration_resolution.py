@@ -47,3 +47,45 @@ def test_smtp_deliverer_refresh_config(monkeypatch):
     assert deliverer.username == "liveuser"
     assert deliverer.from_email == "outreach@live.com"
     assert deliverer.is_configured is True
+
+
+def test_environment_remains_authoritative_when_settings_are_stale(monkeypatch):
+    """The displayed database values cannot silently override the sender."""
+    repo = SQLiteSettingsRepository()
+    repo.set("smtp.host", "smtp.stale.test")
+    repo.set("smtp.from_email", "stale@test.invalid")
+    monkeypatch.setenv("SMTP_HOST", "smtp.gmail.com")
+    monkeypatch.setenv("SMTP_USERNAME", "sender")
+    monkeypatch.setenv("SMTP_PASSWORD", "secret")
+    monkeypatch.setenv("SMTP_FROM_EMAIL", "authoritative@example.com")
+
+    cfg = get_smtp_config()
+    assert cfg["host"] == "smtp.gmail.com"
+    assert cfg["from_email"] == "authoritative@example.com"
+    assert cfg["source"] == "environment"
+
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    cfg_db = get_smtp_config()
+    assert cfg_db["host"] == "smtp.stale.test"
+    assert cfg_db["source"] == "database"
+
+
+def test_api_settings_surfaces_authoritative_smtp_source(monkeypatch):
+    """The /api/settings endpoint exposes which source is authoritative for SMTP."""
+    from fastapi.testclient import TestClient
+    from leadforge.server import app
+
+    client = TestClient(app)
+    monkeypatch.setenv("SMTP_HOST", "smtp.gmail.com")
+    res = client.get("/api/settings")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["smtp.host"]["source"] == "environment"
+    assert data["smtp.host"]["authoritative"] is True
+
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    res_db = client.get("/api/settings")
+    assert res_db.status_code == 200
+    data_db = res_db.json()
+    assert data_db["smtp.host"]["source"] == "database"
+

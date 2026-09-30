@@ -217,18 +217,42 @@ def test_subject_selection_string_backward_compat():
 
 
 def test_subject_variants_in_production_campaign_routing():
-    """Verify live campaign_routing.yaml contains 4-6 valid variants per campaign."""
+    """Verify live subject configurations expose a meaningful variant pool."""
     router = CampaignRouter()
-    assert len(router.campaigns) >= 4
+    # 2026-09-24: consolidated down to a single manufacturer campaign plus
+    # the untouched non-manufacturing booking campaign.
+    assert len(router.campaigns) >= 2
     for camp in router.campaigns:
         copy_tpl = camp.get("copy_template", {})
         subjects = copy_tpl.get("subject")
-        assert isinstance(subjects, list), f"Campaign {camp['name']} must have a list of subject variants"
-        assert 4 <= len(subjects) <= 6, f"Campaign {camp['name']} must have 4-6 variants, got {len(subjects)}"
-        for s in subjects:
+        if isinstance(subjects, list):
+            assert 4 <= len(subjects) <= 6, f"Campaign {camp['name']} must have 4-6 variants, got {len(subjects)}"
+            subject_variants = subjects
+        else:
+            assert isinstance(subjects, dict), f"Campaign {camp['name']} must have a list or slot-based subject config"
+            slots = subjects.get("slots", {})
+            assert subjects.get("template") and slots, f"Campaign {camp['name']} slot-based subject needs template and slots"
+            combinations = 1
+            subject_variants = []
+            for values in slots.values():
+                assert isinstance(values, list) and values
+                combinations *= len(values)
+                subject_variants.extend(values)
+            assert combinations >= 96, f"Campaign {camp['name']} has only {combinations} subject combinations"
+        for s in subject_variants:
             assert isinstance(s, str) and len(s) > 0
             # Confirm no empty braces or malformed templates
             assert "{" not in s or "}" in s
+
+
+# NOTE (2026-09-24): the old "Manufacturing - B2B Dealer & Order Portal"
+# campaign used a 12x12 slot-composed subject (144 combinations) specifically
+# to avoid collisions across large batches. It was retired along with the
+# rest of the dealer-portal pitch (see campaign_routing.yaml header comment).
+# The single remaining manufacturer campaign uses a plain 5-item subject list
+# because the scheduled send cap is 3/day (scripts/daily_outreach.py) - a
+# 48-lead-batch collision test no longer reflects how outreach actually runs,
+# so it was removed rather than kept passing against a pool it can't satisfy.
 
 
 # ============================================================================
@@ -236,73 +260,86 @@ def test_subject_variants_in_production_campaign_routing():
 # ============================================================================
 
 
-def test_premise_gating_order_portal_has_form_or_order_flow_rejected():
-    """Manufacturing portal campaign must NOT match if the site already has a contact form or order flow."""
-    router = CampaignRouter()
+@pytest.fixture
+def synthetic_order_portal_config(tmp_path: Path) -> Path:
+    """A minimal standalone campaign exercising has_order_flow/has_contact_form
+    premise gating.
 
-    # 1. Has working contact form -> rejected from Order Portal, falls to General Outreach
+    2026-09-24: the production "Manufacturing - B2B Dealer & Order Portal"
+    campaign that originally exercised this gating was retired (obsolete
+    dealer-portal pitch - see campaign_routing.yaml header comment). The
+    gating mechanism itself in CampaignRouter.route_lead() is unchanged and
+    still used by the live "Campaign B (Booking)" has_booking criterion, so
+    it is tested here against a synthetic campaign instead of depending on
+    since-deleted production content.
+    """
+    config_data = {
+        "campaigns": [
+            {
+                "name": "Synthetic Order Portal",
+                "target_offer": "Dealer Order Portal",
+                "criteria": {
+                    "has_website": True,
+                    "has_order_flow": False,
+                    "has_contact_form": False,
+                    "categories": ["Manufacturers"],
+                },
+                "copy_template": {"subject": "s", "body_structure": "b"},
+            },
+        ]
+    }
+    config_path = tmp_path / "synthetic_order_portal.yaml"
+    config_path.write_text(yaml.dump(config_data))
+    return config_path
+
+
+def test_premise_gating_order_portal_has_form_or_order_flow_rejected(synthetic_order_portal_config: Path):
+    """A campaign asserting NO contact form / order flow must NOT match a lead with either."""
+    router = CampaignRouter(config_path=synthetic_order_portal_config)
+
     matched_form = router.route_lead(
-        category="Manufacturers",
-        has_website=True,
-        ssl_valid=True,
-        has_order_flow=False,
-        has_contact_form=True,
+        category="Manufacturers", has_website=True, ssl_valid=True,
+        has_order_flow=False, has_contact_form=True,
     )
-    assert matched_form is not None
-    assert matched_form["name"] == "General Outreach (Digital Performance)"
+    assert matched_form is None
 
-    # 2. Has order flow (e.g. Shopify/ecommerce) -> rejected from Order Portal, falls to General Outreach
     matched_order = router.route_lead(
-        category="Manufacturers",
-        has_website=True,
-        ssl_valid=True,
-        has_order_flow=True,
-        has_contact_form=False,
+        category="Manufacturers", has_website=True, ssl_valid=True,
+        has_order_flow=True, has_contact_form=False,
     )
-    assert matched_order is not None
-    assert matched_order["name"] == "General Outreach (Digital Performance)"
+    assert matched_order is None
 
-    # 3. Via audit_data dictionary with Shopify CMS -> detected as has_order_flow=True, falls to General Outreach
     matched_shopify = router.route_lead(
-        category="Manufacturers",
-        has_website=True,
-        ssl_valid=True,
+        category="Manufacturers", has_website=True, ssl_valid=True,
         audit_data={"cms": "Shopify", "has_booking": False, "has_contact_form": False},
     )
-    assert matched_shopify is not None
-    assert matched_shopify["name"] == "General Outreach (Digital Performance)"
+    assert matched_shopify is None
 
 
-def test_premise_gating_order_portal_no_form_matches():
-    """Manufacturing portal campaign matches only when real evidence confirms NO form and NO order flow."""
-    router = CampaignRouter()
+def test_premise_gating_order_portal_no_form_matches(synthetic_order_portal_config: Path):
+    """The campaign matches only when real evidence confirms NO form and NO order flow."""
+    router = CampaignRouter(config_path=synthetic_order_portal_config)
     matched = router.route_lead(
-        category="Manufacturers",
-        has_website=True,
-        ssl_valid=True,
-        has_order_flow=False,
-        has_contact_form=False,
+        category="Manufacturers", has_website=True, ssl_valid=True,
+        has_order_flow=False, has_contact_form=False,
     )
     assert matched is not None
-    assert matched["name"] == "Manufacturing - B2B Dealer & Order Portal"
+    assert matched["name"] == "Synthetic Order Portal"
 
 
-def test_premise_gating_order_portal_unknown_evidence_routes_but_unverified():
+def test_premise_gating_order_portal_unknown_evidence_routes_but_unverified(synthetic_order_portal_config: Path):
     """Missing evidence is unknown, not absence.
 
-    The lead still routes to the order-portal campaign, but the match is
-    flagged unverified so the composer never asserts the premise as fact.
+    The lead still routes to the campaign, but the match is flagged
+    unverified so the composer never asserts the premise as fact.
     """
-    router = CampaignRouter()
+    router = CampaignRouter(config_path=synthetic_order_portal_config)
     matched = router.route_lead(
-        category="Manufacturers",
-        has_website=True,
-        ssl_valid=True,
-        has_order_flow=None,
-        has_contact_form=None,
+        category="Manufacturers", has_website=True, ssl_valid=True,
+        has_order_flow=None, has_contact_form=None,
     )
     assert matched is not None
-    assert matched["name"] == "Manufacturing - B2B Dealer & Order Portal"
+    assert matched["name"] == "Synthetic Order Portal"
     assert matched["premise_verified"] is False
     assert set(matched["premise_unverified_fields"]) == {
         "has_order_flow",
@@ -311,7 +348,12 @@ def test_premise_gating_order_portal_unknown_evidence_routes_but_unverified():
 
 
 def test_premise_gating_booking_has_booking_rejected():
-    """Campaign B (Booking) must NOT match if the site already has a booking widget."""
+    """Campaign B (Booking) must NOT match if the site already has a booking widget.
+
+    2026-09-24: the catch-all "General Outreach (Digital Performance)" fallback
+    was retired along with the other website-pitch campaigns, so a rejected
+    Dentist lead now has no other campaign to fall through to.
+    """
     router = CampaignRouter()
     matched = router.route_lead(
         category="Dentists",
@@ -319,8 +361,7 @@ def test_premise_gating_booking_has_booking_rejected():
         ssl_valid=True,
         has_booking=True,
     )
-    assert matched is not None
-    assert matched["name"] == "General Outreach (Digital Performance)"
+    assert matched is None
 
 
 def test_premise_gating_booking_no_booking_matches():
@@ -545,16 +586,28 @@ def test_production_campaign_routing_body_variants_and_voice():
         "streamline",
     ]
     router = CampaignRouter()
-    assert len(router.campaigns) >= 4
+    assert len(router.campaigns) >= 2
 
     for camp in router.campaigns:
         copy_tpl = camp.get("copy_template", {})
 
         # Subjects check
         subjects = copy_tpl.get("subject")
-        assert isinstance(subjects, list), f"Campaign {camp['name']} must have a list of subjects"
-        assert 4 <= len(subjects) <= 6, f"Campaign {camp['name']} subject count {len(subjects)} outside 4-6 range"
-        for s in subjects:
+        if isinstance(subjects, list):
+            assert 4 <= len(subjects) <= 6, f"Campaign {camp['name']} subject count {len(subjects)} outside 4-6 range"
+            subject_variants = subjects
+        else:
+            assert isinstance(subjects, dict), f"Campaign {camp['name']} subject must be list or slot dict"
+            slots = subjects.get("slots", {})
+            assert subjects.get("template") and slots
+            combination_count = 1
+            subject_variants = []
+            for values in slots.values():
+                assert isinstance(values, list) and values
+                combination_count *= len(values)
+                subject_variants.extend(values)
+            assert combination_count >= 96
+        for s in subject_variants:
             for banned in banned_words:
                 assert banned not in s.lower(), f"Banned phrase '{banned}' found in subject: {s}"
 
@@ -755,3 +808,60 @@ def test_unverified_premise_never_yields_asserting_slot():
     assert "Taking dealer orders over WhatsApp causes errors." in verified_body
 
 
+def test_render_subject_hard_ceiling_and_fallback():
+    """Verify CampaignRouter.render_subject enforces the 50-character ceiling via fallback cascade."""
+    router = CampaignRouter()
+    portal = next(c for c in router.campaigns if c["name"] == "Manufacturing - Inquiry & Lead Management")
+    copy_tpl = portal["copy_template"]
+
+    # Test genuinely long names from the real dataset
+    long_names = [
+        "Sahajanand Medical Technologies Pvt. Ltd.",
+        "Khyati Industries Sheet Metal Parts manufacturer",
+        "ProtekG Power Electronics Pvt Ltd - Online UPS, Servo Voltage Stabilizer, Manufacturers & Repairing in Ahmedabad",
+        "Sanju sales Agarbatti and pujapa wholesaler",
+        "Shivam Hydraulic Pumps & Cylinders",
+        "Rajsagar Steel Pvt Ltd - MS Seamless Pipes, Line Pipes, ST52 Pipes, CS Seamless Pipe Manufacturers in Gujarat, India",
+        "A" * 150,  # Extreme adversarial length
+    ]
+
+    topics = [
+        "servo voltage stabilizers",
+        "sheet metal components",
+        "precision instrumentation",
+        "aromatherapy products",
+        "oil cooled servo voltage stabilizers",
+    ]
+
+    for name in long_names:
+        for topic in topics:
+            subject_tpl = CampaignRouter.select_subject(copy_tpl, business_id=f"biz-test-{name[:10]}")
+            rendered = CampaignRouter.render_subject(
+                template=subject_tpl,
+                business_name=name,
+                specific_topic=topic,
+                max_chars=50,
+            )
+            assert len(rendered) <= 50, f"Subject '{rendered}' ({len(rendered)} chars) exceeded 50-char ceiling for '{name}'"
+            assert len(rendered) > 0
+
+
+def test_render_subject_preserves_short_clean_templates():
+    """Short company names retain their opening and topic without needing truncation."""
+    tpl = "quick note: {topic_focus} at {business_name}"
+    rendered = CampaignRouter.render_subject(
+        template=tpl,
+        business_name="Firestop",
+        specific_topic="fire extinguishers",
+        max_chars=50,
+    )
+    assert rendered == "quick note: fire extinguishers at Firestop"
+    assert len(rendered) <= 50
+
+
+# NOTE (2026-09-24): test_closing_noun_reduction_in_production_templates was
+# removed along with the retired dealer-portal campaign. It asserted facts
+# about that campaign's 12-shape slot-based subject
+# (copy_template.subject.slots.topic), a structure the single remaining
+# manufacturer campaign does not use (it has a plain 5-item subject list -
+# see test_subject_variants_in_production_campaign_routing).

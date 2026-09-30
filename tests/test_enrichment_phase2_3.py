@@ -9,6 +9,9 @@ from leadforge.server import app
 from leadforge.enrichment.providers.indiamart import IndiaMartProvider
 from leadforge.enrichment.providers.tradeindia import TradeIndiaProvider
 from leadforge.enrichment.providers.justdial import JustdialProvider
+from leadforge.enrichment.orchestrator import EmailEnrichmentOrchestrator
+from leadforge.enrichment.phone_orchestrator import PhoneEnrichmentOrchestrator
+from leadforge.repositories.settings import SQLiteSettingsRepository
 import httpx
 
 
@@ -117,5 +120,33 @@ def test_red_team_directory_provider_resilience():
                 for prof in malicious_profiles:
                     results = await prov.enrich(prof)
                     assert isinstance(results, list)
+
+    asyncio.run(_test())
+
+
+def test_directory_providers_default_off_without_pipeline_error(temp_db):
+    """The opt-out flag removes dead directories without changing no-result semantics."""
+    SQLiteSettingsRepository().set("enrichment.directory_providers_enabled", "false")
+    email_orchestrator = EmailEnrichmentOrchestrator()
+    assert {provider.name for provider in email_orchestrator._providers}.isdisjoint(
+        {"indiamart", "justdial", "tradeindia"}
+    )
+
+    async def _test():
+        phone_orchestrator = PhoneEnrichmentOrchestrator()
+        result = await phone_orchestrator.enrich_phone(
+            {"name": "No Directory Call", "city": "Ahmedabad"},
+            enabled_platforms=[],
+            initial_phone=None,
+        )
+        assert result == (None, None, None, [])
+
+        # Also when enabled_platforms is omitted/None
+        result_none = await phone_orchestrator.enrich_phone(
+            {"name": "No Directory Call", "city": "Ahmedabad"},
+            enabled_platforms=None,
+            initial_phone=None,
+        )
+        assert result_none == (None, None, None, [])
 
     asyncio.run(_test())

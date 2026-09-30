@@ -434,3 +434,69 @@ def test_generator_rating_recital_accepted_when_no_site_text(mock_post: MagicMoc
     assert source == "llm"
 
 
+def test_validate_specific_topic():
+    from leadforge.outreach.generator import validate_specific_topic
+
+    # Valid short grounded topics (1-3 words)
+    assert validate_specific_topic("servo voltage stabilizers")[0] is True
+    assert validate_specific_topic("servo voltage stabilizers")[1] == "servo voltage stabilizers"
+    assert validate_specific_topic('"temperature instruments."')[0] is True
+    assert validate_specific_topic('"temperature instruments."')[1] == "temperature instruments"
+    assert validate_specific_topic("thermochromic pigments")[0] is True
+    assert validate_specific_topic("thermochromic pigments")[1] == "thermochromic pigments"
+
+    # Over-length topics compressed to 1-3 words
+    valid_gum, compressed_gum = validate_specific_topic("cassia tora gum powder")
+    assert valid_gum is True
+    assert compressed_gum == "cassia tora gum"
+    assert len(compressed_gum.split()) <= 3
+
+    valid_dyes, compressed_dyes = validate_specific_topic("reactive dyes manufacturing")
+    assert valid_dyes is True
+    assert compressed_dyes == "reactive dyes"
+    assert len(compressed_dyes.split()) <= 3
+
+    valid_stabilizers, compressed_stabilizers = validate_specific_topic("oil cooled servo voltage stabilizers")
+    assert valid_stabilizers is True
+    assert compressed_stabilizers == "servo voltage stabilizers"
+    assert len(compressed_stabilizers.split()) <= 3
+
+    # Over-length topic rejected when compression is disabled
+    assert validate_specific_topic("four word product phrase", allow_compression=False)[0] is False
+
+    # Invalid topics: empty / sentence garbage / generic / banned
+    assert validate_specific_topic("")[0] is False
+    assert validate_specific_topic("   ")[0] is False
+    assert validate_specific_topic("products")[0] is False
+    assert validate_specific_topic("solutions")[0] is False
+    assert validate_specific_topic("digital footprint")[0] is False
+    assert validate_specific_topic("this is way too many words for a concise specific product topic tag")[0] is False
+
+
+@patch("requests.post")
+def test_generate_hook_extracts_specific_topic(mock_post: MagicMock, generator: OllamaHookGenerator):
+    """When LLM returns specific_topic and observation_hook, both are captured and validated."""
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {
+        "response": '{"observation_hook": "I noticed Aavad Instrument manufactures temperature and pressure instruments.", "specific_topic": "temperature instruments"}'
+    }
+    mock_post.return_value = resp
+
+    hook, source, topic = generator.generate_hook_with_details(
+        business_name="Aavad Instrument",
+        review_count=45,
+        rating=4.7,
+        city="Ahmedabad",
+        scraped_text="Precision instrumentation, temperature sensors, pressure gauges, and transmitters.",
+        category="Manufacturers",
+    )
+
+    assert source == "llm"
+    assert topic == "temperature instruments"
+    assert generator.last_specific_topic == "temperature instruments"
+    assert generator.last_classification is not None
+    assert generator.last_classification.is_usable is True
+
+
+

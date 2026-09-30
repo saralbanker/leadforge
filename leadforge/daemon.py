@@ -11,6 +11,7 @@ Runs unattended 24/7 to:
 """
 
 import asyncio
+import json
 import os
 import random
 import time
@@ -22,11 +23,13 @@ from typing import Dict, Any, Optional, List
 from leadforge.config import BASE_DIR, OLLAMA_API_URL, DEFAULT_LLM_MODEL
 from leadforge.database import get_db_connection, append_event, uuidv7
 from leadforge.repositories.settings import SettingsCache
+from leadforge.outreach.cleaning import clean_company_name
 from leadforge.outreach.deliverer import SMTPEmailDeliverer
 from leadforge.outreach.ramp import delivery_allowance
 from leadforge.outreach.router import CampaignRouter
 from leadforge.outreach.generator import OllamaHookGenerator
 from leadforge.outreach.quality import EmailQualityEngine
+from leadforge.normalizer import normalize_email, is_valid_recipient_email
 from leadforge.communication.sequencer import FollowupSequencer
 from leadforge.communication.inbox import IMAPInboxMonitor
 from leadforge.communication.telegram_notifier import send_telegram_alert
@@ -232,7 +235,7 @@ class AutonomousOrvionEngine:
                 audit = await asyncio.to_thread(WebsiteAuditor.audit_website, domain)
                 emails = audit.get("discovered_emails", [])
                 if emails:
-                    email = emails[0].strip().lower()
+                    email = normalize_email(emails[0])
                     cursor.execute(
                         "UPDATE businesses SET contact_email = ?, last_scraped_at = ?, updated_at = ? WHERE id = ?",
                         (email, now_str, now_str, biz_id),
@@ -288,6 +291,11 @@ class AutonomousOrvionEngine:
                   WHERE opp2.business_id = b.id 
                     AND ed.status IN ('APPROVED', 'SENT', 'PENDING_APPROVAL', 'QUEUED')
               )
+              AND NOT EXISTS (
+                  SELECT 1 FROM email_drafts ed
+                  WHERE LOWER(ed.recipient_email) = LOWER(b.contact_email)
+                    AND ed.status IN ('APPROVED', 'SENT', 'PENDING_APPROVAL', 'QUEUED')
+              )
             GROUP BY b.id
             ORDER BY (CASE WHEN LOWER(b.name) LIKE '%pvt%ltd%' OR LOWER(b.name) LIKE '%private%limited%' THEN 1 ELSE 0 END) DESC, o.score DESC
             LIMIT 10
@@ -303,19 +311,24 @@ class AutonomousOrvionEngine:
         seen_biz_ids = set()
         seen_emails = set()
 
+        from leadforge.outreach.discovery import is_duplicate_outreach, WebsiteAuditor
+
         for opp in opps:
             opp_id = opp["opportunity_id"]
             biz_id = opp["business_id"]
             name = opp["name"]
+            clean_name = clean_company_name(name)
             category = opp["category"] or "Manufacturing"
             area = opp["area"] or "Ahmedabad"
             city = opp["city"] or "Ahmedabad"
-            email = opp["contact_email"].strip().lower()
+            email = normalize_email(opp["contact_email"])
             website = opp["website_domain"] or ""
             rating = opp["rating"]
             review_count = opp["review_count"]
 
             if biz_id in seen_biz_ids or email in seen_emails:
+                continue
+            if is_duplicate_outreach(biz_id, email=email, domain=website):
                 continue
             seen_biz_ids.add(biz_id)
             seen_emails.add(email)
@@ -328,40 +341,112 @@ class AutonomousOrvionEngine:
             if not campaign:
                 continue
 
-            # 2. Generate Observation Hook via Ollama
-            hook = self.generator.generate_hook(
-                business_name=name,
+            # Fetch website scraped text from DB cache or auditor
+            scraped_text = ""
+            if website:
+                try:
+                    cursor.execute(
+                        """
+                        SELECT wa.issues_json FROM website_audits wa
+                        JOIN digital_presences dp ON wa.digital_presence_id = dp.id
+                        WHERE dp.business_id = ?
+                        ORDER BY wa.created_at DESC LIMIT 1
+                        """,
+                        (biz_id,),
+                    )
+                    wa_row = cursor.fetchone()
+                    if wa_row and wa_row[0]:
+                        cached_audit = json.loads(wa_row[0])
+                        scraped_text = cached_audit.get("cleaned_text", "")
+                except Exception:
+                    pass
+
+                if not scraped_text:
+                    try:
+                        audit = WebsiteAuditor.audit_website(website)
+                        scraped_text = audit.get("cleaned_text", "")
+                    except Exception:
+                        pass
+
+            # 2. Generate Observation Hook & Specific Topic via Ollama
+            premise_verified = campaign.get("premise_verified", True)
+            hook, hook_source, specific_topic = self.generator.generate_hook_with_details(
+                business_name=clean_name,
                 category=category,
                 city=city,
                 area=area,
                 has_website=bool(website),
-                scraped_text=f"{category} in {area}",
+                scraped_text=scraped_text,
                 rating=rating,
                 review_count=review_count,
+                premise_verified=premise_verified,
             )
 
-            # 3. Assemble Body
+            # 3. Assemble Subject & Body
             copy_tpl = campaign.get("copy_template", {})
             subject_tpl = CampaignRouter.select_subject(copy_tpl, business_id=biz_id)
-            body_tpl = CampaignRouter.select_body(copy_tpl, business_id=biz_id)
+            body_tpl = CampaignRouter.select_body(copy_tpl, business_id=biz_id, premise_verified=premise_verified)
 
+            topic_focus = specific_topic or category or "manufacturing"
             vars_dict = SafeDict({
-                "business_name": name,
+                "business_name": clean_name,
+                "business_name_full": name,
                 "city": city,
                 "area": area,
                 "category": category,
-                "observation_hook": hook or f"I noticed {name} operates in {area}.",
+                "observation_hook": hook or f"I noticed {clean_name} operates in {area}.",
+                "specific_topic": specific_topic,
+                "topic_focus": topic_focus,
             })
-            subject = subject_tpl.format_map(vars_dict)
-            body = body_tpl.format_map(vars_dict)
+            subject = CampaignRouter.render_subject(
+                subject_tpl,
+                **vars_dict,
+            )
+            body = CampaignRouter.render_body(
+                template=body_tpl,
+                business_name=clean_name,
+                observation_hook=hook or f"I noticed {clean_name} operates in {area}.",
+                city=city,
+                area=area,
+                category=category,
+                business_name_full=name,
+                specific_topic=specific_topic,
+                topic_focus=topic_focus,
+                scraped_text=scraped_text,
+                business_id=biz_id,
+            )
 
-            # 4. Quality Gate
-            quality = EmailQualityEngine.score_draft(body)
+            # 4. Quality Gate & Defensive Email Validation
+            cursor.execute(
+                """
+                SELECT body FROM email_drafts
+                WHERE status IN ('PENDING_APPROVAL', 'APPROVED', 'QUEUED', 'SENT')
+                ORDER BY updated_at DESC LIMIT 25
+                """
+            )
+            recent_bodies = [r["body"] for r in cursor.fetchall()]
+            quality = EmailQualityEngine.score_draft(body, previous_bodies=recent_bodies)
+            body_valid, body_issues = EmailQualityEngine.validate_body(
+                body,
+                city=city,
+                has_website=bool(website),
+            )
+            subj_valid, subj_issues = EmailQualityEngine.validate_subject(
+                subject,
+                business_name=clean_name,
+            )
+            all_issues = list(quality["issues"])
+            if not body_valid:
+                all_issues.extend(body_issues)
+            if not subj_valid:
+                all_issues.extend(subj_issues)
+
             quality_score = quality["quality_score"]
-            quality_passed = quality["passed"]
+            quality_passed = quality["passed"] and body_valid and subj_valid
+            is_valid_email, email_err = is_valid_recipient_email(email)
 
-            # Auto-approval: If score is 100, approve automatically!
-            status = "APPROVED" if quality_score == 100 else "PENDING_APPROVAL"
+            # Auto-approval: If score is 100 AND quality passed AND recipient email is valid, approve automatically!
+            status = "APPROVED" if (quality_score == 100 and quality_passed and is_valid_email) else "PENDING_APPROVAL"
             now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             draft_id = uuidv7()
 
@@ -370,10 +455,10 @@ class AutonomousOrvionEngine:
                 INSERT INTO email_drafts (
                     id, opportunity_id, campaign_name, recipient_email, subject, body, status,
                     quality_score, quality_passed, quality_issues, hook_source, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ollama_autonomous', ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (draft_id, opp_id, campaign["name"], email, subject, body, status,
-                 quality_score, 1 if quality_passed else 0, "", now_str, now_str)
+                 quality_score, 1 if quality_passed else 0, json.dumps(all_issues), hook_source, now_str, now_str)
             )
             append_event(
                 event_type="EMAIL_DRAFT_AUTO_APPROVED" if status == "APPROVED" else "EMAIL_DRAFT_GENERATED",

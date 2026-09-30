@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 
 from leadforge.enrichment.base import BaseEnrichmentProvider, EnrichmentResult
 from leadforge.enrichment.http_fetch import fetch_page
+from leadforge.normalizer import normalize_email, is_valid_recipient_email
 from leadforge.utils import get_logger
 
 logger = get_logger()
@@ -72,7 +73,9 @@ class IndiaMartProvider(BaseEnrichmentProvider):
                     re.IGNORECASE,
                 )
                 if match:
-                    email_clean = match.group(1).lower().strip()
+                    email_clean = normalize_email(match.group(1))
+                    if not is_valid_recipient_email(email_clean)[0]:
+                        continue
                     email_domain = email_clean.split("@")[-1]
                     if email_domain not in ignored_domains and not any(email_clean.endswith(ext) for ext in invalid_exts):
                         found.append(
@@ -88,7 +91,9 @@ class IndiaMartProvider(BaseEnrichmentProvider):
             # Regex text extraction
             pattern = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
             for match in pattern.findall(text):
-                email_clean = match.lower().strip()
+                email_clean = normalize_email(match)
+                if not is_valid_recipient_email(email_clean)[0]:
+                    continue
                 email_domain = email_clean.split("@")[-1]
                 if email_domain in ignored_domains or any(email_clean.endswith(ext) for ext in invalid_exts):
                     continue

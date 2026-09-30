@@ -69,6 +69,13 @@ class SQLiteSettingsRepository(SettingsRepositoryInterface):
         val = self.get(key)
         return val if val is not None else default
 
+    def get_bool(self, key: str, default: bool = False) -> bool:
+        """Gets value as boolean ('true', '1', 'yes')."""
+        val = self.get(key)
+        if val is None:
+            return default
+        return str(val).strip().lower() in ("true", "1", "yes", "t", "y")
+
 
 class SettingsCache:
     """Loads all settings in one SELECT query and serves them from memory.
@@ -117,3 +124,10 @@ class SettingsCache:
     def get_str(self, key: str, default: str) -> str:
         val = self.get(key)
         return val if val is not None else default
+
+    def get_bool(self, key: str, default: bool = False) -> bool:
+        """Gets value as boolean ('true', '1', 'yes')."""
+        val = self.get(key)
+        if val is None:
+            return default
+        return str(val).strip().lower() in ("true", "1", "yes", "t", "y")

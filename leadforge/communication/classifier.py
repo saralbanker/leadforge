@@ -11,6 +11,57 @@ logger = get_logger()
 
 VALID_CLASSIFICATIONS = {"POSITIVE", "NEGATIVE", "UNSUBSCRIBE", "BOUNCE", "OUT_OF_OFFICE", "NEUTRAL"}
 
+# Hard bounce: the address itself is invalid - a 5xx/5.x.x SMTP code, or a DSN
+# saying the mailbox does not exist. Never worth retrying.
+_HARD_BOUNCE_PATTERNS = [
+    r"\b5\d{2}[\s-]5\.\d\.\d\b",
+    r"\baddress not found\b",
+    r"\buser unknown\b",
+    r"\bno such user\b",
+    r"\bmailbox not found\b",
+    r"\bdoes not exist\b",
+    r"\brecipient address rejected\b",
+    r"\binvalid recipient\b",
+    r"\bunknown user\b",
+    r"\bunknown recipient\b",
+    r"\bno mailbox by that name\b",
+]
+
+# Soft bounce: a temporary delivery problem - a 4xx/4.x.x SMTP code, a full
+# mailbox, or a greylisting deferral. The address may still be good, so it
+# stays eligible for a later retry.
+_SOFT_BOUNCE_PATTERNS = [
+    r"\b4\d{2}[\s-]4\.\d\.\d\b",
+    r"\bmailbox full\b",
+    r"\bquota exceeded\b",
+    r"\bover quota\b",
+    r"\btry again later\b",
+    r"\btemporarily deferred\b",
+    r"\bgreylisted\b",
+    r"\bmailbox unavailable, try again\b",
+    r"\bmessage delayed\b",
+]
+
+
+def classify_bounce_severity(text: str) -> str:
+    """Classifies a bounce message body/subject as 'hard' or 'soft'.
+
+    'hard' (permanent - the address is invalid, never retry it) or 'soft'
+    (temporary - full mailbox, greylisted, deferred; still retryable).
+
+    Defaults to 'hard' when no soft-bounce indicator is present at all:
+    treating an ambiguous bounce as permanent is the safer failure mode for
+    a cold-outreach sender protecting its own deliverability.
+    """
+    if not text:
+        return "hard"
+    lower = text.lower()
+    has_soft = any(re.search(pat, lower) for pat in _SOFT_BOUNCE_PATTERNS)
+    has_hard = any(re.search(pat, lower) for pat in _HARD_BOUNCE_PATTERNS)
+    if has_soft and not has_hard:
+        return "soft"
+    return "hard"
+
 
 class LLMReplyClassifier:
     """Classifies prospect email replies into structured intent categories."""

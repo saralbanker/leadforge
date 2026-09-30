@@ -5,6 +5,7 @@ import urllib3
 from bs4 import BeautifulSoup
 from typing import Dict, Any, List, Optional
 from leadforge.database import get_db_connection
+from leadforge.normalizer import normalize_email, is_valid_recipient_email
 from leadforge.utils import get_logger
 
 # Suppress insecure request warnings for self-signed certificates during fallback fetches
@@ -54,9 +55,11 @@ def extract_emails_from_text(text: str) -> List[str]:
     found = pattern.findall(text)
     emails: List[str] = []
     for email in found:
-        email_clean = email.strip().lower()
+        email_clean = normalize_email(email)
+        is_valid, _ = is_valid_recipient_email(email_clean)
         if (
-            email_clean not in GENERIC_EMAILS_IGNORE
+            is_valid
+            and email_clean not in GENERIC_EMAILS_IGNORE
             and not any(email_clean.endswith(dom) for dom in IGNORED_EMAIL_DOMAINS)
             and email_clean not in emails
         ):
@@ -266,7 +269,9 @@ class WebsiteAuditor:
             href = str(link.get("href", ""))
             match = re.search(r"mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})", href, re.IGNORECASE)
             if match:
-                discovered_emails.append(match.group(1).lower())
+                clean_m = normalize_email(match.group(1))
+                if is_valid_recipient_email(clean_m)[0]:
+                    discovered_emails.append(clean_m)
 
         # Scan page text body
         raw_text = soup.get_text(separator=" ")
@@ -276,8 +281,8 @@ class WebsiteAuditor:
         # Deduplicate list
         final_emails: List[str] = []
         for email in discovered_emails:
-            email_clean = email.strip().lower()
-            if email_clean not in final_emails and email_clean not in GENERIC_EMAILS_IGNORE:
+            email_clean = normalize_email(email)
+            if is_valid_recipient_email(email_clean)[0] and email_clean not in final_emails and email_clean not in GENERIC_EMAILS_IGNORE:
                 final_emails.append(email_clean)
 
         # Fallback: check contact pages if no emails found on homepage
@@ -297,11 +302,11 @@ class WebsiteAuditor:
                         for link in c_soup.find_all("a", href=re.compile(r"^mailto:", re.IGNORECASE)):
                             m = re.search(r"mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})", str(link.get("href", "")), re.IGNORECASE)
                             if m:
-                                em = m.group(1).lower().strip()
-                                if em not in final_emails and em not in GENERIC_EMAILS_IGNORE:
+                                em = normalize_email(m.group(1))
+                                if is_valid_recipient_email(em)[0] and em not in final_emails and em not in GENERIC_EMAILS_IGNORE:
                                     final_emails.append(em)
                         for em in extract_emails_from_text(c_soup.get_text(separator=" ")):
-                            if em not in final_emails and em not in GENERIC_EMAILS_IGNORE:
+                            if is_valid_recipient_email(em)[0] and em not in final_emails and em not in GENERIC_EMAILS_IGNORE:
                                 final_emails.append(em)
                         if final_emails:
                             break

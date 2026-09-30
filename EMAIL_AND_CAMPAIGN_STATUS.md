@@ -300,3 +300,228 @@ There is no reply data at all — `communication_threads` and
 about what copy actually works**. Every quality judgement in this system is a
 proxy: length, banned vocabulary, links, repetition. Until replies are recorded,
 treat all of it as a hygiene filter, not as a measure of effectiveness.
+
+---
+
+## 10. Routing-premise and subject investigation (2026-09-20)
+
+This section was measured against the available database files and the live
+router, rather than inferred from the YAML.
+
+### Audit evidence is not yet usable as a persistent routing gate
+
+`website_audits` has only `lighthouse_score`, `page_speed_ms`, `issues_json`,
+and `recommendation_notes`; there is no typed order-flow, contact-form, or
+confidence column. The specified backup
+`backups/leadforge_backup_20260721_164855.db` contains **196 businesses, 0
+usable email addresses, and 0 website-audit rows** — it is not the described
+365-business / 48-email snapshot. The newer `leadforge.db` contains **330
+businesses, 53 usable email addresses, and 2 audit rows (for one presence)**.
+Both persisted audit JSON documents lack `has_order_flow` and
+`has_contact_form`.
+
+`outreach.discovery.WebsiteAuditor` does compute those two booleans from the
+homepage HTML (CMS/e-commerce markers and form markup), and the router already
+refuses a confirmed positive signal. But no complete evidence set has been
+persisted: its older cached JSON has neither field, and a boolean scan cannot
+establish that a form or ordering flow is *working*. `get_approved_exemplars()`
+uses the correct house standard — a real inbound human reply, excluding bounces
+— so the same standard means unknown audit evidence cannot support an absence
+claim.
+
+**Decision: no routing change in this task.** Do not route this campaign on
+`false` values until a separate enrichment task adds versioned evidence such as
+`contact_flow_status` / `order_flow_status` (`present`, `absent`, `unknown`),
+detector version, checked URL(s), timestamp, and confidence; follow the
+contact/order links and verify a usable form/action before marking `present`.
+Estimate: 2–3 engineering days plus a crawl of the website cohort. Until then,
+skip the asserted-premise route (or keep only the existing unverified,
+question-form copy); do not treat missing JSON keys as `false`.
+
+### Subject collision result and fix
+
+The real selector is `SHA256("subject:" + business_id) mod N`, not random or
+LLM-driven. In the fresher DB, **43 of 53** usable-email businesses route to
+the manufacturing portal campaign. Its previous five-template pool selected
+all five templates but produced **38 template collisions (88.4%)**, with the
+largest bucket containing **10** leads. The other ten usable-email records did
+not route to a campaign; the old backup has no viable-email cohort to measure.
+
+The portal campaign now uses two independently salted 12-item subject slots
+(**144 combinations**), still deterministic for regeneration and without an
+LLM call. On those same 43 business IDs it yields **36 distinct combinations,
+7 collisions (16.3%)**, and a largest bucket of **4**. A regression test also
+measures a stable 48-lead batch: five flat templates produce at least 40
+collisions, while the 144-combination configuration produces at most 12 and
+less than one third of the old collision count. This is sized to the only
+currently viable, portal-heavy batch; there is no evidence that an LLM subject
+hook is needed for it.
+
+---
+
+## 11. Delivery-readiness addendum (2026-09-20)
+
+This addendum was measured against the current `leadforge.db`, the loaded
+`.env`, and the current code. No SMTP send was performed.
+
+### SMTP resolution decision
+
+`get_smtp_config()` still treats a non-empty `SMTP_HOST` in the environment as
+authoritative. The live settings rows were synchronized to that resolved
+configuration, including Gmail host/port, sender identity, TLS, reply-to and
+credentials (credentials were not printed). The resolved sender is
+`orvionstudio.co@gmail.com`; the sender display name is `Saral Banker`.
+
+This removes the UI/runtime disagreement without changing the precedence rule:
+environment configuration still wins if someone subsequently changes it. The
+new configuration-resolution test proves stale database rows cannot override
+an explicitly configured environment sender.
+
+### Deliberate first-batch limit
+
+The live `outreach.daily_send_limit` was changed from **2** to **10**. The
+code fallback remains 20, but it is not the operational decision. Ten is a
+deliberate first real-batch cap: it is below the approximately 43 viable
+portal-route leads and 48 viable addresses, aligns with the day-1 ramp ceiling
+of 10, and limits exposure while this Gmail sender has two historical hard
+bounces and zero replies. Review delivery, bounces, and replies before any
+increase.
+
+### Safety rails re-verified
+
+| Rail | Result | Current evidence |
+|---|---|---|
+| Quality score persisted | PASS | `email_drafts.quality_score`; existing draft-quality migration/test coverage remains present. |
+| Quality enforced at bulk approval | PASS | bulk approval reads `outreach.min_quality_score`; `tests/test_draft_quality_gate.py` remains the contract. |
+| Repetition detection | PASS | opening-line comparison against recent drafts remains covered by `tests/test_draft_quality_gate.py`. |
+| Fallback-hook detection | PASS | fallback hook provenance remains refused at bulk approval, covered by `tests/test_draft_quality_gate.py`. |
+| MX / domain verification | PASS | enabled by default; `tests/test_enrichment_no_fabrication.py` now directly asserts the `getaddrinfo(host, port, family=..., type=...)` fallback call uses keywords and accepts a resolving domain, while unresolvable candidates are excluded. |
+| Opt-out suppression before draft generation | PASS | `server.py` checks `businesses.is_suppressed` before hook/draft generation. |
+| Opt-out suppression before SMTP dispatch | PASS (strengthened) | `deliverer.py` now checks both business and address suppression before `send_email`; its regression test proves no SMTP call occurs and the draft is cancelled. |
+| Deduplication | PASS | draft generation checks business/email/domain; dispatch separately cancels a recipient already marked `SENT`. |
+| Daily send cap | PASS | `delivery_allowance()` is resolved before dispatch and the dispatch loop re-checks its absolute ceiling per item; `test_ph002_daily_send_safety_limit` proves only two of four approved drafts reach SMTP when the configured cap is two. |
+| Scheduler | PASS as intentionally manual | No scheduler was added; approve and deliver remain manual HTTP actions. |
+
+### Pre-send dry run
+
+Run this immediately before a manual delivery action:
+
+```bash
+python scripts/outreach_dry_run.py
+# optional: restrict the report to selected approved drafts
+python scripts/outreach_dry_run.py --draft-id <draft-id>
+```
+
+It performs no database writes and never opens SMTP. It reports fresh MX
+results, suppression, already-sent recipient deduplication, resolved
+from-address, current allowance, and the effective send count. A measured
+empty-selection run produced:
+
+```text
+Outreach pre-send dry run (no email sent)
+Resolved SMTP from-address: orvionstudio.co@gmail.com
+Approved drafts inspected: 0
+MX: 0 pass, 0 fail
+Suppressed: 0
+Deduplicated (already sent): 0
+Eligible to dispatch: 0
+Daily limit: 10; remaining allowance: 10
+Effective send count: 0
+```
+
+### Directory providers
+
+`enrichment.directory_providers_enabled` is now a live setting and is
+**false**. With it false, IndiaMart, Justdial, and TradeIndia are removed from
+the default email-enrichment path and phone enrichment is invoked with an
+explicit platform list that excludes them. The providers were not deleted or
+rewritten. A regression test confirms the disabled path returns its normal
+empty result without an error.
+
+### Explicitly deferred (deliberate omissions)
+
+The following are quoted from the task scope and were not changed:
+
+- “The B2B Dealer & Order Portal routing premise.” It lacks sufficient audit
+  evidence; no gate, copy, or `campaign_routing.yaml` portal logic was touched.
+- “The 12x12 subject slot expansion.” It was already complete; its router
+  regression test remains in the focused suite.
+- “A scheduler for approve/deliver.” Manual triggers remain correct for this
+  first-batch stage.
+- “llm.system_prompt or the hook-generation prompt itself.” Copy quality was
+  outside this safety/deliverability change.
+- “Any WhatsApp-side code.” It is a separate module and was not touched.
+
+---
+
+## 12. Stage 1 & Stage 2 Execution and Full Suite Verification (2026-09-20)
+
+Measured and verified across the live codebase, SQLite database, and complete test suite.
+
+### 1. State found from prior session
+- Git inspection revealed partial uncommitted changes from the interrupted session: `.env` and `settings` table had been synchronized, initial draft of `dry_run.py` was present, and tests had partial coverage.
+- The full test run log `/tmp/leadforge-full-pytest.log` existed but was 0 bytes (execution had terminated before suite completion).
+- Live settings verification showed `outreach.daily_send_limit` set to `10`, `enrichment.directory_providers_enabled` set to `false`, and SMTP credentials synchronized with `.env`.
+
+### 2. SMTP resolution decision
+- Priority rule preserved: `os.getenv("SMTP_HOST")` remains authoritative at runtime via `get_smtp_config()`.
+- To eliminate silent UI disagreement:
+  - `get_smtp_config()` now returns `"source": "environment"` or `"source": "database"`.
+  - The `/api/settings` endpoint was updated to explicitly surface `"source"` and `"authoritative"` metadata on all `smtp.*` keys.
+  - The live `settings` table rows were reconciled with `.env` (`host=smtp.gmail.com`, `from_email=orvionstudio.co@gmail.com`).
+  - Backed by tests in `tests/test_smtp_configuration_resolution.py`.
+
+### 3. Recommended daily_send_limit: 10
+- Sized strictly to the measured ~43 viable portal leads and ~48 total viable email addresses.
+- Aligns with the Day 1 warm-up ramp ceiling of 10 defined in `leadforge/outreach/ramp.py` (`1:10,8:20,15:30,22:40`).
+- The sender reputation on `orvionstudio.co@gmail.com` carries 2 historical hard bounces with 0 replies. Limiting the first batch to 10 emails per day spreads the ~40 approved drafts across 4 days, allowing daily review of delivery, bounce rate, and reply signals before volume escalates.
+
+### 4. Safety rails re-verification table
+
+| Rail | Verdict | Evidence & Current Wiring |
+|---|---|---|
+| Quality score persisted | PASS | `email_drafts.quality_score` column present; validated in `tests/test_draft_quality_gate.py`. |
+| Quality enforced at bulk approval | PASS | `server.py` checks `score < min_score` (80) and halts unrated/low-scoring drafts; covered in `tests/test_draft_quality_gate.py`. |
+| Repetition detection | PASS | `EmailQualityEngine.find_similar()` checks body similarity against approved cohort (threshold 0.70) and hook similarity (0.62). |
+| Fallback-hook detection | PASS | `server.py` blocks drafts whose `hook_source` begins with `fallback:`; covered in `tests/test_draft_quality_gate.py`. |
+| MX / domain verification | PASS | `_check_domain_has_mx()` in `aggregator.py` uses keyword args (`family=socket.AF_INET, type=socket.SOCK_STREAM`); rejects NXDOMAIN/unresolvable domains; verified by `tests/test_enrichment_no_fabrication.py`. |
+| Opt-out suppression before draft generation | PASS | `server.py` checks `businesses.is_suppressed` AND queries `unsubscribe_suppressions` for `recipient_email`, raising HTTP 422 before hook generation; covered in `tests/test_outreach_hardening.py`. |
+| Opt-out suppression before SMTP dispatch | PASS | `deliverer.py` queries business and `unsubscribe_suppressions` before SMTP socket open, marking suppressed drafts `CANCELLED`; covered in `tests/test_outreach_hardening.py`. |
+| Deduplication | PASS | Draft generation checks `is_duplicate_outreach`; deliverer separately enforces deduplication against `SENT` drafts per recipient email before dispatch. |
+| Daily send cap | PASS | Enforced at actual SMTP dispatch: `deliverer.py` evaluates `delivery_allowance()` at batch start and enforces `sent_today >= daily_limit` per item; covered by `tests/test_outreach_hardening.py`. |
+| Scheduler | PASS (manual) | Intentionally manual HTTP triggers (`/api/outreach/drafts/bulk-approve`, `/api/outreach/deliver`); no automated background daemon. |
+
+### 5. Standalone pre-send dry-run tool
+- Runnable via `python scripts/outreach_dry_run.py` or `./scripts/outreach_dry_run.py` (with optional `--draft-id`).
+- Real measured output against live database:
+```text
+Outreach pre-send dry run (no email sent)
+Generated: 2026-09-20T10:39:50Z
+Resolved SMTP from-address: orvionstudio.co@gmail.com
+Approved drafts inspected: 40
+MX: 39 pass, 1 fail
+Suppressed: 0
+Deduplicated (already sent): 0
+Eligible to dispatch: 39
+Daily limit: 10; remaining allowance: 10
+Effective send count: 10
+Allowance detail: 10 left today (sent 0/10, bound by configured limit; bounce 0% of last 0)
+```
+
+### 6. Directory scraper providers (Stage 2)
+- Setting `enrichment.directory_providers_enabled` is persisted as `false` in `settings`.
+- When disabled, `EmailEnrichmentOrchestrator`, `PhoneEnrichmentOrchestrator`, and `SearchOrchestrator` exclude `indiamart`, `justdial`, and `tradeindia`.
+- Verified non-erroring pipeline behavior via `tests/test_enrichment_phase2_3.py`.
+
+### 7. Full test suite verification
+```text
+======================= 719 passed, 1 warning in 56.45s ========================
+```
+
+### 8. Explicitly deferred items
+1. **B2B Dealer & Order Portal routing premise:** Unchanged. `website_audits` has only 2 populated rows out of 330 businesses; no order flow audit data exists to gate on.
+2. **12x12 subject slot expansion:** Unchanged and passing regression test `test_portal_subject_composition_reduces_collisions_in_48_lead_batch`.
+3. **Scheduler for approve/deliver:** Unchanged; manual dispatch is intentional.
+4. **LLM system prompt / hook content:** Unchanged; prompt and copy quality are out of scope.
+5. **whatsapp_auto/ module:** Unchanged; preserved as a separate module.
+

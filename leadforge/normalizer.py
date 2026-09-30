@@ -226,13 +226,40 @@ def normalize_category(category: str) -> str:
 
 
 def normalize_email(email: str) -> str:
-    """Cleans and standardizes email strings."""
+    """Cleans and standardizes email strings, stripping mailto: and unquoting URL-encoded characters."""
     if not email:
         return ""
     import urllib.parse
-    cleaned = urllib.parse.unquote(str(email)).strip().lower()
-    cleaned = re.sub(r"^mailto:", "", cleaned, flags=re.IGNORECASE).strip()
-    return cleaned
+    raw = str(email).strip()
+    raw = re.sub(r"^mailto:", "", raw, flags=re.IGNORECASE).strip()
+    unquoted = urllib.parse.unquote(raw).strip()
+    if "%20" in unquoted:
+        unquoted = unquoted.replace("%20", "").strip()
+    unquoted = re.sub(r"\s+", "", unquoted)
+    return unquoted.lower()
+
+
+def is_valid_recipient_email(email: Optional[str]) -> tuple[bool, Optional[str]]:
+    """Defensively validates an email address for outbound outreach.
+
+    Rejects addresses containing:
+    - empty / None
+    - %20 or percent signs
+    - whitespace (leading, trailing, or internal)
+    - missing '@' or missing domain / TLD
+    """
+    if not email or not isinstance(email, str):
+        return False, "Email is empty or not a string"
+    if email != email.strip():
+        return False, "Email contains leading or trailing whitespace"
+    if "%" in email:
+        return False, "Email contains percent-encoded character (e.g. %20)"
+    if re.search(r"\s", email):
+        return False, "Email contains whitespace"
+    pattern = r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.[a-zA-Z]{2,}$"
+    if not re.match(pattern, email):
+        return False, f"Email '{email}' does not match standard RFC email format"
+    return True, None
 
 
 def normalize_status(status: str) -> str:

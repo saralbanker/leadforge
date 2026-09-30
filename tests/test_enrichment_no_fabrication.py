@@ -8,6 +8,7 @@ exist so that behaviour cannot return.
 
 import asyncio
 import re
+import socket
 from pathlib import Path
 
 import pytest
@@ -125,6 +126,27 @@ def test_domain_existence_check_uses_keyword_args():
         agg = EmailCandidateAggregator(verify_mx=True)
         assert await agg._check_domain_has_mx("localhost.") in (True, False)  # must not raise
         assert await agg._check_domain_has_mx("") is False
+
+    asyncio.run(_test())
+
+
+def test_domain_existence_fallback_passes_getaddrinfo_family_and_type_by_keyword(monkeypatch):
+    """The fallback must not regress to the positional-argument TypeError."""
+    import sys
+
+    class FakeLoop:
+        async def getaddrinfo(self, host, port, **kwargs):
+            assert host == "mail.example"
+            assert port is None
+            assert kwargs["family"] == socket.AF_INET
+            assert kwargs["type"] == socket.SOCK_STREAM
+            return [(None, None, None, None, None)]
+
+    async def _test():
+        agg = EmailCandidateAggregator(verify_mx=True)
+        monkeypatch.setattr(asyncio, "get_event_loop", lambda: FakeLoop())
+        monkeypatch.setitem(sys.modules, "dns", None)
+        assert await agg._check_domain_has_mx("mail.example") is True
 
     asyncio.run(_test())
 

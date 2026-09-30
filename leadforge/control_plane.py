@@ -225,6 +225,18 @@ class SearchOrchestrator:
         if not active_platforms:
             active_platforms = ["google_maps"]
 
+        # IndiaMart, Justdial, and TradeIndia are known to return no usable
+        # contact data.  Keep them opt-in even if an old caller still supplies
+        # one of their names.
+        from leadforge.enrichment.orchestrator import directory_providers_enabled
+        if not directory_providers_enabled(self._settings_cache):
+            active_platforms = [
+                platform for platform in active_platforms
+                if platform not in {"indiamart", "justdial", "tradeindia"}
+            ]
+            if not active_platforms:
+                active_platforms = ["google_maps"]
+
         logger.info("⚡ Search Orchestrator: Starting qualified-lead campaign.")
         logger.info(f"Target limit: {limit} qualified leads | Search budget: {budget}")
         logger.info(f"Category: '{effective_category}' (Sector: '{category}') | Platforms: {active_platforms}")

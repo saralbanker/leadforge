@@ -166,8 +166,8 @@ def test_generate_draft_fills_missing_phone(mock_hook: MagicMock, mock_audit: Ma
     opp_id = "01907de3-bc42-7c89-8d76-5a507db4fa22"
     bt_id = "01907de3-bc42-7c89-8d76-5a507db4fa33"
 
-    cursor.execute("INSERT OR IGNORE INTO business_types (id, name) VALUES (?, ?);", (bt_id, "Phone Test Category"))
-    cursor.execute("SELECT id FROM business_types WHERE name = 'Phone Test Category'")
+    cursor.execute("INSERT OR IGNORE INTO business_types (id, name) VALUES (?, ?);", (bt_id, "Manufacturers"))
+    cursor.execute("SELECT id FROM business_types WHERE name = 'Manufacturers'")
     bt_id = cursor.fetchone()[0]
     cursor.execute(
         """

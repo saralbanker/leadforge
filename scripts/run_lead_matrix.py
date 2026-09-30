@@ -32,10 +32,25 @@ TARGETS = BASE / "campaign_targets.yaml"
 
 
 def load_targets() -> tuple[list[tuple[str, str]], dict]:
-    """Expands the matrix into (city, category) pairs, tier-1 markets first."""
+    """Expands the matrix into (city, category) pairs.
+
+    Supports the current campaign_targets.yaml shape (priority_clusters /
+    secondary_clusters, each a list of {area, city, categories: [{name, ...}]}),
+    with fallback to the older markets/categories shape for backward compat.
+    """
     cfg = yaml.safe_load(TARGETS.read_text())
-    cats = [c["name"] for c in cfg["categories"]]
     pairs: list[tuple[str, str]] = []
+
+    if "priority_clusters" in cfg or "secondary_clusters" in cfg:
+        clusters = list(cfg.get("priority_clusters", [])) + list(cfg.get("secondary_clusters", []))
+        for cluster in clusters:
+            city = cluster.get("city", cfg.get("defaults", {}).get("city", ""))
+            for cat in cluster.get("categories", []):
+                pairs.append((city, cat["name"]))
+        return pairs, cfg.get("defaults", {})
+
+    # Legacy shape: top-level markets[].cities[] x categories[].name
+    cats = [c["name"] for c in cfg["categories"]]
     for market in sorted(cfg["markets"], key=lambda m: m.get("tier", 9)):
         for city in market["cities"]:
             for cat in cats:
@@ -125,7 +140,7 @@ def main() -> None:
     args = ap.parse_args()
 
     pairs, defaults = load_targets()
-    limit = args.limit or defaults["limit_per_pair"]
+    limit = args.limit or defaults.get("limit_per_pair") or defaults.get("limit_per_run", 30)
 
     con = sqlite3.connect(DB)
     done = completed_recently(con, defaults["recrawl_after_days"])

@@ -59,17 +59,24 @@ class PhoneEnrichmentOrchestrator:
         }
 
         active_provider_keys = set()
-        if enabled_platforms:
+        if enabled_platforms is not None:
             for p in enabled_platforms:
                 k = platform_key_map.get(p.lower().strip(), p)
                 if k in self.providers:
                     active_provider_keys.add(k)
         else:
-            active_provider_keys = set(self.providers.keys())
+            from leadforge.enrichment.orchestrator import directory_providers_enabled
+            if directory_providers_enabled():
+                active_provider_keys = set(self.providers.keys())
+            else:
+                active_provider_keys = {
+                    k for k in self.providers.keys()
+                    if k not in {"indiamart", "justdial", "tradeindia"}
+                }
 
         # If business has a website and website is not explicitly excluded, include website phone provider
         if business_profile.get("website") or business_profile.get("website_domain"):
-            if not enabled_platforms or "website" in enabled_platforms or "official_website" in enabled_platforms:
+            if enabled_platforms is None or "website" in enabled_platforms or "official_website" in enabled_platforms:
                 active_provider_keys.add("official_website")
 
         # Exclude initial discovery source from redundant secondary search if not needed

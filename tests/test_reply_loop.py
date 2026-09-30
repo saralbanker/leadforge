@@ -310,6 +310,65 @@ def test_side_effect_bounce(temp_db):
     conn.close()
 
 
+def test_side_effect_bounce_soft_is_retryable(temp_db):
+    """A soft bounce (4.x.x / mailbox full) must NOT clear the contact email or
+    cancel queued drafts - the address may still be good, unlike a hard bounce."""
+    biz_id, opp_id, thread = _create_test_business_and_thread("Sleepy Lead Corp", "sleepy@sleepylead.com")
+    repo = SQLiteCommunicationRepository()
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    draft_id2 = uuidv7()
+    cursor.execute(
+        """
+        INSERT INTO email_drafts (id, opportunity_id, campaign_name, recipient_email, subject, body, status)
+        VALUES (?, ?, 'Outreach', 'sleepy@sleepylead.com', 'Subject 2', 'Body 2', 'APPROVED')
+        """,
+        (draft_id2, opp_id),
+    )
+    conn.commit()
+
+    raw_bounce = (
+        b"From: MAILER-DAEMON@googlemail.com\r\n"
+        b"To: outreach@leadforge.ai\r\n"
+        b"Subject: Delivery Status Notification (Delay)\r\n"
+        b"Message-ID: <bounce-soft-1@googlemail.com>\r\n\r\n"
+        b"The response was: 450 4.2.2 The email account sleepy@sleepylead.com that you tried to reach is over quota. Try again later."
+    )
+
+    monitor = IMAPInboxMonitor(repository=repo)
+    msg = monitor.process_inbound_raw_email(raw_bounce)
+
+    assert msg is not None
+    assert msg.classification_label == "BOUNCE"
+
+    # Contact email must survive a soft bounce.
+    biz_row = conn.execute("SELECT contact_email FROM businesses WHERE id = ?", (biz_id,)).fetchone()
+    assert biz_row["contact_email"] == "sleepy@sleepylead.com"
+
+    # Queued draft must survive a soft bounce.
+    d_row = conn.execute("SELECT status FROM email_drafts WHERE id = ?", (draft_id2,)).fetchone()
+    assert d_row["status"] == "APPROVED"
+
+    # Thread must not be marked terminally FAILED on a soft bounce.
+    thread_row = conn.execute(
+        "SELECT current_state FROM communication_threads WHERE id = ?", (thread.id,)
+    ).fetchone()
+    assert thread_row["current_state"] != "FAILED"
+    conn.close()
+
+
+def test_classify_bounce_severity():
+    """Unit coverage for the hard/soft bounce severity classifier itself."""
+    from leadforge.communication.classifier import classify_bounce_severity
+
+    assert classify_bounce_severity("550 5.1.1 The email account that you tried to reach does not exist") == "hard"
+    assert classify_bounce_severity("The recipient's mailbox is full and cannot accept messages (mailbox full)") == "soft"
+    assert classify_bounce_severity("421 4.7.0 try again later, mailbox temporarily deferred") == "soft"
+    assert classify_bounce_severity("No such user here") == "hard"
+    assert classify_bounce_severity("") == "hard"
+
+
 def test_side_effect_positive(temp_db):
     """Verifies POSITIVE classification flags prominently, transitions state, cancels followups, and does NOT auto-book."""
     biz_id, opp_id, thread = _create_test_business_and_thread("Interested Corp", "buyer@interested.com")

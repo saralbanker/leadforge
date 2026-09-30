@@ -1,8 +1,10 @@
 import hashlib
+import re
 import yaml
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from leadforge.config import BASE_DIR
+from leadforge.outreach.cleaning import clean_company_name, shorten_company_name
 from leadforge.utils import get_logger
 
 logger = get_logger()
@@ -290,6 +292,137 @@ class CampaignRouter:
             return select_followup_body(campaign_or_copy_template["copy_template"], step=step, business_id=business_id, premise_verified=pv)
         pv = premise_verified if premise_verified is not None else True
         return select_followup_body(campaign_or_copy_template, step=step, business_id=business_id, premise_verified=pv)
+
+    @staticmethod
+    def render_subject(template: str, business_name: Optional[str] = None, max_chars: int = 50, **kwargs) -> str:
+        """Renders subject template with cleaned business name and grounded topic,
+        guaranteeing the result never exceeds max_chars through a progressive fallback cascade.
+        """
+        from leadforge.outreach.generator import compress_specific_topic
+
+        raw_biz = business_name or kwargs.get("business_name") or kwargs.get("business_name_full") or ""
+        clean_name = clean_company_name(raw_biz)
+        topic_raw = kwargs.get("specific_topic") or kwargs.get("topic_focus") or kwargs.get("category") or "manufacturing"
+        topic = compress_specific_topic(str(topic_raw), max_words=3)
+        if not topic:
+            topic = "manufacturing"
+
+        # 1. Standard template interpolation with clean business name
+        vars_map = {
+            "business_name": clean_name,
+            "topic_focus": topic,
+            "specific_topic": topic,
+            **kwargs,
+        }
+        out = template
+        for k, v in vars_map.items():
+            out = out.replace(f"{{{k}}}", str(v))
+        out = re.sub(r"\s+", " ", out).strip()
+
+        if len(out) <= max_chars:
+            return out
+
+        # 2. Drop opening prefix if present
+        opening_prefix_pattern = r"^(quick note:|question:|note on|idea for|re:|quick thought:|inquiry re:|details:|brief note:|regarding|checking in:|quick question:|a thought on|an idea for|overview of|details on|a note regarding|quick question on|brief thought on)\s*"
+        stripped_opening = re.sub(opening_prefix_pattern, "", out, flags=re.IGNORECASE).strip()
+        if stripped_opening and len(stripped_opening) <= max_chars:
+            return stripped_opening
+
+        # 3. Use shortened business name with opening
+        short_name = shorten_company_name(clean_name, max_chars=18)
+        vars_map_short = {**vars_map, "business_name": short_name}
+        out_short = template
+        for k, v in vars_map_short.items():
+            out_short = out_short.replace(f"{{{k}}}", str(v))
+        out_short = re.sub(r"\s+", " ", out_short).strip()
+        if len(out_short) <= max_chars:
+            return out_short
+
+        # 4. Use shortened business name without opening
+        stripped_short = re.sub(opening_prefix_pattern, "", out_short, flags=re.IGNORECASE).strip()
+        if stripped_short and len(stripped_short) <= max_chars:
+            return stripped_short
+
+        # 5. Minimal grounded fallback: "{topic} - {short_name}"
+        minimal = f"{topic} - {short_name}".strip()
+        if len(minimal) <= max_chars:
+            return minimal
+
+        # 6. Hard guarantee: Word boundary truncation up to max_chars
+        words = minimal.split()
+        res = []
+        curr = 0
+        for w in words:
+            add = len(w) if not res else len(w) + 1
+            if curr + add <= max_chars:
+                res.append(w)
+                curr += add
+            else:
+                break
+        if res:
+            return " ".join(res).strip(".,-& :")
+        return minimal[:max_chars].strip()
+
+    @staticmethod
+    def render_body(template: str, business_name: str, **kwargs) -> str:
+        """Renders body template with cleaned business name, resolving slot tokens
+        and defensively preventing opening sentence location collisions.
+        """
+        clean_name = clean_company_name(business_name)
+        vars_map = {"business_name": clean_name, **kwargs}
+
+        if "{contact_bridge}" in template and "contact_bridge" not in vars_map:
+            from leadforge.outreach.generator import generate_contact_bridge
+            hook = kwargs.get("observation_hook", "")
+            city = kwargs.get("city", "")
+            specific_topic = kwargs.get("specific_topic") or kwargs.get("topic_focus", "")
+            scraped_text = kwargs.get("scraped_text", "")
+            raw_name = kwargs.get("business_name_full", business_name)
+            biz_id = kwargs.get("business_id")
+            category = kwargs.get("category", "")
+            bridge, _ = generate_contact_bridge(
+                business_name=clean_name,
+                raw_name=raw_name,
+                city=city,
+                hook=hook,
+                specific_topic=specific_topic,
+                scraped_text=scraped_text,
+                business_id=biz_id,
+                category=category,
+            )
+            vars_map["contact_bridge"] = bridge
+
+        out = template
+        for k, v in vars_map.items():
+            out = out.replace(f"{{{k}}}", str(v))
+        out = re.sub(r"\{[a-zA-Z0-9_]+\}", "", out)
+
+        city = kwargs.get("city")
+        if city and str(city).strip():
+            c_clean = str(city).strip()
+            paras = [p.strip() for p in out.split("\n\n") if p.strip()]
+            if len(paras) >= 2:
+                p1 = paras[0]
+                p2 = paras[1]
+                city_pat = re.compile(rf"\b{re.escape(c_clean)}\b", re.IGNORECASE)
+                if city_pat.search(p1) and city_pat.search(p2):
+                    p2_fixed = re.sub(
+                        rf"\b(?:based\s+here\s+in|based\s+in|here\s+in|in)\s+{re.escape(c_clean)}\b",
+                        "locally",
+                        p2,
+                        flags=re.IGNORECASE,
+                    )
+                    if p2_fixed == p2:
+                        p2_fixed = re.sub(
+                            rf"\b{re.escape(c_clean)}\b",
+                            "local",
+                            p2,
+                            flags=re.IGNORECASE,
+                        )
+                    paras[1] = p2_fixed
+                    out = "\n\n".join(paras)
+
+        return out.strip()
 
     def route_lead(
         self,

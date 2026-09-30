@@ -4,6 +4,7 @@ import json
 from typing import AsyncGenerator, List, Dict, Any, Optional
 from playwright.async_api import async_playwright
 from leadforge.config import USER_AGENT, HEADLESS_SCRAPING, PLAYWRIGHT_SLOWMO
+from leadforge.normalizer import normalize_email
 from leadforge.parser import parse_business_details
 from leadforge.utils import get_logger
 from leadforge.repositories.settings import SQLiteSettingsRepository
@@ -266,7 +267,7 @@ async def _scrape_page(
     social_links: list = []
     for href in t2.get("hrefs", []):
         if "mailto:" in href:
-            candidate = href.replace("mailto:", "").split("?")[0].strip()
+            candidate = normalize_email(href)
             if candidate and not email:
                 email = candidate
         elif any(

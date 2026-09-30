@@ -144,6 +144,7 @@ def get_smtp_config(settings_cache=None) -> dict:
         "reply_to": reply_to,
         "timeout": timeout,
         "is_configured": configured,
+        "source": "environment" if (env_host and env_host.strip()) else "database",
     }
 
 

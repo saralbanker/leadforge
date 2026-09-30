@@ -26,6 +26,7 @@ from foundation.config import (
     LEADFORGE_DB_PATH,
     SCHEMA_PATH,
 )
+from foundation.generator import WhatsAppHookGenerator
 from foundation.phone_utils import format_display_phone, normalize_indian_phone
 from foundation.templates import render_template_a, render_template_b, render_template_c
 from foundation.url_builder import build_whatsapp_link
@@ -34,9 +35,27 @@ from foundation.url_builder import build_whatsapp_link
 class WhatsAppQueueManager:
     """Manages prospect queue, templates, and dispatch status."""
 
-    def __init__(self, db_path: Path = DB_PATH):
+    def __init__(self, db_path: Path = DB_PATH, hook_generator: Optional[WhatsAppHookGenerator] = None):
         self.db_path = db_path
+        self.hook_generator = hook_generator or WhatsAppHookGenerator()
         self._init_db()
+
+    def _render_message(self, contact: Dict[str, Any], template_name: str = "template_a") -> str:
+        """Builds the exact queued message, retaining static copy on LM fallback."""
+        hook, source = self.hook_generator.generate_hook_with_source(
+            company_name=contact["company_name"],
+            products=contact.get("products"),
+            area=contact.get("area"),
+        )
+        # Each template's former opening is its deterministic fallback.  In
+        # particular B and C have different evidence-bound wording than A.
+        # Do not replace that proven fallback with a generic generator clause.
+        injected_hook = hook if source == "llm" else None
+        if template_name == "template_b":
+            return render_template_b(contact["company_name"], contact.get("products"), contact.get("area"), hook=injected_hook)
+        if template_name == "template_c":
+            return render_template_c(contact["company_name"], contact.get("products"), contact.get("area"), hook=injected_hook)
+        return render_template_a(contact["company_name"], contact.get("products"), contact.get("area"), hook=injected_hook)
 
     def _get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -160,12 +179,7 @@ class WhatsAppQueueManager:
             )
             row = cur.fetchone()
             if row:
-                if template_name == "template_b":
-                    message_text = render_template_b(row["company_name"], row["products"], row["area"])
-                elif template_name == "template_c":
-                    message_text = render_template_c(row["company_name"], row["products"], row["area"])
-                else:
-                    message_text = render_template_a(row["company_name"], row["products"], row["area"])
+                message_text = self._render_message(dict(row), template_name)
             else:
                 message_text = f"Dispatched {template_name}"
 
@@ -190,7 +204,7 @@ class WhatsAppQueueManager:
 
         for idx, lead in enumerate(leads, 1):
             phone = lead["normalized_phone"]
-            msg = render_template_a(lead["company_name"], lead["products"], lead["area"])
+            msg = self._render_message(lead)
             link_web = build_whatsapp_link(phone, msg, mode="web")
             link_app = build_whatsapp_link(phone, msg, mode="universal")
 
@@ -309,7 +323,7 @@ def main():
 
     for idx, lead in enumerate(leads, 1):
         phone = lead["normalized_phone"]
-        msg = render_template_a(lead["company_name"], lead["products"], lead["area"])
+        msg = mgr._render_message(lead)
         link = build_whatsapp_link(phone, msg, mode="web")
 
         print(f"\n[{idx}/{len(leads)}] {lead['company_name']} ({lead['area']})")
@@ -326,13 +340,13 @@ def main():
             break
 
         if choice in ("", "s"):
-            mgr.mark_status(lead["id"], "SENT")
+            mgr.mark_status(lead["id"], "SENT", message_text=msg)
             print("✓ Marked SENT")
         elif choice == "k":
-            mgr.mark_status(lead["id"], "SKIPPED")
+            mgr.mark_status(lead["id"], "SKIPPED", message_text=msg)
             print("⊘ Marked SKIPPED")
         elif choice == "n":
-            mgr.mark_status(lead["id"], "NOT_ON_WA")
+            mgr.mark_status(lead["id"], "NOT_ON_WA", message_text=msg)
             print("✗ Marked NOT_ON_WA")
         elif choice == "q":
             print("Exiting queue. Progress is saved in database.")

@@ -14,6 +14,18 @@ from leadforge.utils import get_logger
 
 logger = get_logger()
 
+DIRECTORY_PROVIDER_NAMES = {"indiamart", "justdial", "tradeindia"}
+
+
+def directory_providers_enabled(settings_cache=None) -> bool:
+    """Directory scrapers are opt-in until a working source is selected."""
+    if settings_cache is None:
+        from leadforge.repositories.settings import SettingsCache
+        settings_cache = SettingsCache()
+    return settings_cache.get_str("enrichment.directory_providers_enabled", "false").strip().lower() in {
+        "true", "1", "yes",
+    }
+
 
 def get_default_providers() -> List[BaseEnrichmentProvider]:
     """Instantiates default multi-provider pipeline."""
@@ -36,6 +48,8 @@ class EmailEnrichmentOrchestrator:
         repository: Optional[SQLiteEnrichmentRepository] = None,
     ):
         self._providers = providers if providers is not None else get_default_providers()
+        if providers is None and not directory_providers_enabled():
+            self._providers = [p for p in self._providers if p.name not in DIRECTORY_PROVIDER_NAMES]
         self._aggregator = aggregator or EmailCandidateAggregator()
         self._repo = repository or SQLiteEnrichmentRepository()
 

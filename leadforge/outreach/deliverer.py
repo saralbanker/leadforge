@@ -185,8 +185,16 @@ class SMTPEmailDeliverer:
                 logger.warning(f"Transient network error for {to_email}: {net_err}. Retrying attempt {attempt + 1}/{max_attempts} in {sleep_time}s...")
                 time.sleep(sleep_time)
 
-    def send_approved_drafts(self) -> int:
-        """Finds 'APPROVED' drafts in SQLite, checks daily limit, sends them, and updates statuses.
+    def send_approved_drafts(
+        self,
+        max_sends: Optional[int] = None,
+        enforce_content_validation: Optional[bool] = None,
+    ) -> int:
+        """Finds 'APPROVED' drafts in SQLite, checks daily limit and per-run cap, sends them, and updates statuses.
+
+        Args:
+            max_sends: Optional hard maximum number of emails to deliver in this single run.
+            enforce_content_validation: Whether to run post-send content validation and trip breaker. Defaults to outreach.enforce_content_validation setting.
 
         Returns:
             Count of successfully delivered emails.
@@ -201,6 +209,26 @@ class SMTPEmailDeliverer:
 
             from leadforge.repositories.settings import SettingsCache
             settings_cache = SettingsCache()
+
+            if enforce_content_validation is None:
+                enforce_content_validation = settings_cache.get_bool(
+                    "outreach.enforce_content_validation", False
+                )
+
+            # Preflight safety: reject dispatch immediately if content circuit breaker is tripped
+            from leadforge.outreach.circuit_breaker import is_content_circuit_breaker_tripped
+            tripped, trip_reason = is_content_circuit_breaker_tripped(conn)
+            if tripped:
+                logger.critical(f"Content circuit breaker is TRIPPED: {trip_reason}. Halting dispatch.")
+                conn.close()
+                return 0
+
+            # If max_sends not passed, check if a global max_batch_sends setting exists
+            if max_sends is None:
+                configured_batch_cap = settings_cache.get_int("outreach.max_batch_sends", 0)
+                if configured_batch_cap > 0:
+                    max_sends = configured_batch_cap
+
             # PH-002: Check daily send limit before starting batch.
             # The ceiling is the lower of the configured limit and the warm-up
             # ramp, and drops to zero outright if recent mail is bouncing.
@@ -251,11 +279,17 @@ class SMTPEmailDeliverer:
                 conn.close()
                 return 0
 
-            logger.info(f"Found {len(drafts)} APPROVED email drafts to dispatch (sent today: {sent_today}/{daily_limit}).")
+            cap_msg = f" (capped to {max_sends} this run)" if max_sends is not None else ""
+            logger.info(f"Found {len(drafts)} APPROVED email drafts to dispatch (sent today: {sent_today}/{daily_limit}){cap_msg}.")
             sent_count = 0
             delay = settings_cache.get_float("outreach.smtp_delay_seconds", 2.0)
 
             for idx, draft in enumerate(drafts):
+                # Check per-run send cap
+                if max_sends is not None and sent_count >= max_sends:
+                    logger.info(f"Per-run send cap reached ({sent_count}/{max_sends}). Halting remaining sends.")
+                    break
+
                 # Check daily limit per item
                 if sent_today >= daily_limit:
                     logger.warning(f"Daily send safety limit reached during dispatch ({sent_today}/{daily_limit}). Halting remaining sends.")
@@ -282,6 +316,30 @@ class SMTPEmailDeliverer:
                 campaign_name = draft["campaign_name"] or "Outreach"
                 opp_id = draft["opportunity_id"]
                 biz_id = draft["business_id"]
+
+                # Suppression is a pre-dispatch gate.  Do this before opening an
+                # SMTP connection, and check both the business record and the
+                # address-level list because old drafts may not have an
+                # opportunity/business join.
+                is_suppressed = False
+                if biz_id:
+                    cursor.execute("SELECT is_suppressed FROM businesses WHERE id = ?", (biz_id,))
+                    b_supp_row = cursor.fetchone()
+                    is_suppressed = bool(b_supp_row and b_supp_row["is_suppressed"])
+                if not is_suppressed and to_email:
+                    cursor.execute(
+                        "SELECT 1 FROM unsubscribe_suppressions WHERE LOWER(email) = ?",
+                        (to_email.strip().lower(),),
+                    )
+                    is_suppressed = cursor.fetchone() is not None
+                if is_suppressed:
+                    logger.warning(f"Skipping draft {draft_id}: recipient {to_email} is suppressed. Marking CANCELLED.")
+                    cursor.execute(
+                        "UPDATE email_drafts SET status = 'CANCELLED', error_message = 'Recipient suppressed before dispatch', updated_at = ? WHERE id = ?",
+                        (datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), draft_id),
+                    )
+                    conn.commit()
+                    continue
 
                 # Deduplication guard: Never send if this recipient already received an email
                 cursor.execute(
@@ -320,15 +378,6 @@ class SMTPEmailDeliverer:
                             biz_id = b_row["id"]
 
                     if biz_id:
-                        # Check suppression status
-                        cursor.execute("SELECT is_suppressed FROM businesses WHERE id = ?", (biz_id,))
-                        b_supp_row = cursor.fetchone()
-                        is_suppressed = bool(b_supp_row and b_supp_row["is_suppressed"])
-                        if not is_suppressed and to_email:
-                            cursor.execute("SELECT 1 FROM unsubscribe_suppressions WHERE email = ?", (to_email.strip().lower(),))
-                            if cursor.fetchone():
-                                is_suppressed = True
-
                         # Find or create communication thread (reuse if existing, never create a second)
                         cursor.execute(
                             "SELECT id, current_state FROM communication_threads WHERE business_id = ? ORDER BY created_at DESC LIMIT 1",
@@ -412,6 +461,48 @@ class SMTPEmailDeliverer:
                     conn.commit()
                     sent_count += 1
                     sent_today += 1
+
+                    # Immediate post-send content validation & circuit breaker check
+                    if enforce_content_validation:
+                        try:
+                            from leadforge.outreach.circuit_breaker import (
+                                validate_draft_content,
+                                trip_content_circuit_breaker,
+                            )
+                            biz_city = ""
+                            biz_website = ""
+                            biz_name = ""
+                            if biz_id:
+                                cursor.execute(
+                                    """
+                                    SELECT b.name, b.website_domain, a.city
+                                    FROM businesses b
+                                    LEFT JOIN addresses a ON a.business_id = b.id
+                                    WHERE b.id = ?
+                                    LIMIT 1
+                                    """,
+                                    (biz_id,),
+                                )
+                                bz_row = cursor.fetchone()
+                                if bz_row:
+                                    biz_name = bz_row["name"] or ""
+                                    biz_city = bz_row["city"] or ""
+                                    biz_website = bz_row["website_domain"] or ""
+
+                            content_valid, content_issues = validate_draft_content(
+                                body=body,
+                                subject=subject,
+                                city=biz_city,
+                                has_website=bool(biz_website),
+                                business_name=biz_name,
+                            )
+                            if not content_valid:
+                                reason = f"Draft {draft_id} to {to_email} violated content standards post-dispatch: {'; '.join(content_issues)}"
+                                logger.critical(f"TRIPPING CONTENT CIRCUIT BREAKER: {reason}")
+                                trip_content_circuit_breaker(conn, reason=reason, draft_id=draft_id)
+                                break
+                        except Exception as cb_err:
+                            logger.warning(f"Error during post-send circuit breaker check: {cb_err}")
                 except Exception as e:
                     err_msg = str(e)
                     logger.error(f"Failed SMTP send for draft {draft_id} to {to_email}: {err_msg}")

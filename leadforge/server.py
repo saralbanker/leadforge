@@ -25,6 +25,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="LeadForge API", version="1.0", lifespan=lifespan)
 logger = get_logger()
 
+from leadforge.normalizer import normalize_email, is_valid_recipient_email
 from leadforge.enrichment.orchestrator import EmailEnrichmentOrchestrator
 enrichment_orchestrator = EmailEnrichmentOrchestrator()
 
@@ -580,15 +581,21 @@ async def list_settings() -> Dict[str, Any]:
     try:
         cursor = conn.cursor()
         cursor.execute("SELECT key, value, description FROM settings ORDER BY key")
+        env_smtp_host = os.getenv("SMTP_HOST")
+        has_env_smtp = bool(env_smtp_host and env_smtp_host.strip())
         result: Dict[str, Any] = {}
         for row in cursor.fetchall():
             key = row["key"]
             if key.startswith("opp.category_map."):
                 continue
-            result[key] = {
+            entry = {
                 "value": row["value"],
                 "description": row["description"] or "",
             }
+            if key.startswith("smtp."):
+                entry["source"] = "environment" if has_env_smtp else "database"
+                entry["authoritative"] = has_env_smtp or (not has_env_smtp)
+            result[key] = entry
         return result
     except Exception as e:
         logger.error(f"Settings list error: {str(e)}")
@@ -982,9 +989,9 @@ async def generate_draft(req: GenerateDraftRequest):
                         logger.info(f"Cache hit: Using cached website audit for domain {website_domain}")
                         audit = json.loads(cache_row["issues_json"])
                         if audit.get("discovered_emails"):
-                            recipient_email = audit["discovered_emails"][0]
+                            recipient_email = normalize_email(audit["discovered_emails"][0])
                         else:
-                            recipient_email = cache_row["contact_email"] or contact_email
+                            recipient_email = normalize_email(cache_row["contact_email"] or contact_email)
                         cache_hit = True
                 except Exception as cache_err:
                     logger.warning(f"Failed to load cached website audit: {cache_err}. Recrawling.")
@@ -992,7 +999,7 @@ async def generate_draft(req: GenerateDraftRequest):
             if not cache_hit:
                 audit = await asyncio.to_thread(WebsiteAuditor.audit_website, website_domain)
                 if audit["discovered_emails"]:
-                    recipient_email = audit["discovered_emails"][0]
+                    recipient_email = normalize_email(audit["discovered_emails"][0])
 
                 try:
                     cursor.execute("SELECT id FROM digital_presences WHERE business_id = ?", (business_id,))
@@ -1066,7 +1073,7 @@ async def generate_draft(req: GenerateDraftRequest):
                 }
                 top_cand, _ = await enrichment_orchestrator.enrich_business(biz_profile)
                 if top_cand and top_cand.email:
-                    recipient_email = top_cand.email
+                    recipient_email = normalize_email(top_cand.email)
                     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                     cursor.execute(
                         "UPDATE businesses SET contact_email = ?, updated_at = ? WHERE id = ?",
@@ -1081,6 +1088,15 @@ async def generate_draft(req: GenerateDraftRequest):
         if not display_phone:
             try:
                 from leadforge.normalizer import canonical_phone
+                from leadforge.enrichment.orchestrator import directory_providers_enabled
+                from leadforge.repositories.settings import SettingsCache
+
+                # The known-dead directory lookups are explicitly opt-in.  An
+                # empty list means no provider, whereas None would retain the
+                # orchestrator's legacy "all providers" behaviour.
+                phone_platforms = None
+                if not directory_providers_enabled(SettingsCache()):
+                    phone_platforms = ["website"]
 
                 p_phone, p_source, c_phone, cand_list = await phone_enrichment_orchestrator.enrich_phone(
                     business_profile={
@@ -1090,6 +1106,7 @@ async def generate_draft(req: GenerateDraftRequest):
                         "website": website_domain,
                         "website_domain": website_domain,
                     },
+                    enabled_platforms=phone_platforms,
                 )
                 if p_phone:
                     display_phone = p_phone
@@ -1158,7 +1175,15 @@ async def generate_draft(req: GenerateDraftRequest):
         # 3. Deduplication & Suppression Check
         cursor.execute("SELECT is_suppressed FROM businesses WHERE id = ?", (business_id,))
         b_row = cursor.fetchone()
-        if b_row and b_row["is_suppressed"] == 1:
+        is_suppressed_target = bool(b_row and b_row["is_suppressed"] == 1)
+        if not is_suppressed_target and recipient_email:
+            cursor.execute(
+                "SELECT 1 FROM unsubscribe_suppressions WHERE LOWER(email) = ?",
+                (recipient_email.strip().lower(),),
+            )
+            is_suppressed_target = cursor.fetchone() is not None
+
+        if is_suppressed_target:
             raise HTTPException(
                 status_code=422,
                 detail="Opt-Out Guard: This business profile is unsubscribed and suppressed from outreach.",
@@ -1173,8 +1198,8 @@ async def generate_draft(req: GenerateDraftRequest):
         # 4. Ollama Hook Generation
         # Maps listings keyword-stuff their titles (one is 125 chars). Using that
         # verbatim reads as bulk mail in a subject line, and derails the model.
-        from leadforge.normalizer import clean_business_name
-        display_name = clean_business_name(business_name) or business_name or ""
+        from leadforge.outreach.cleaning import clean_company_name
+        display_name = clean_company_name(business_name)
         premise_verified = campaign.get("premise_verified", True)
 
         generator = OllamaHookGenerator()
@@ -1190,11 +1215,12 @@ async def generate_draft(req: GenerateDraftRequest):
             has_website=bool(website_domain),
             premise_verified=premise_verified,
         )
+        specific_topic = generator.last_specific_topic
 
         # 5. Compile copy templates
         import collections
         from leadforge.repositories.settings import SettingsCache
-        from leadforge.outreach.generator import compile_compliance_footer
+        from leadforge.outreach.generator import compose_full_body
         settings_cache = SettingsCache()
 
         # Custom template override from request or campaign default
@@ -1210,6 +1236,7 @@ async def generate_draft(req: GenerateDraftRequest):
         campaign_name = "Custom Template Outreach" if (custom_sub or custom_bod) else campaign["name"]
 
         area_val = opp["area"] if "area" in opp.keys() and opp["area"] else ""
+        topic_focus = specific_topic or category or "manufacturing"
         template_vars = collections.defaultdict(str, {
             "business_name": display_name,
             "business_name_full": business_name or "",
@@ -1221,15 +1248,30 @@ async def generate_draft(req: GenerateDraftRequest):
             "review_count": str(review_count) if review_count else "",
             "website_domain": website_domain or "",
             "scraped_text": audit["cleaned_text"] or "",
+            "specific_topic": specific_topic,
+            "topic_focus": topic_focus,
         })
 
-        subject = subject_tpl.format_map(template_vars)
-        body = body_tpl.format_map(template_vars)
+        subject = CampaignRouter.render_subject(
+            subject_tpl,
+            **template_vars,
+        )
+        core_body = CampaignRouter.render_body(
+            template=body_tpl,
+            business_name=display_name,
+            observation_hook=hook or "",
+            city=city or "",
+            area=area_val or "",
+            category=category or "",
+            business_name_full=business_name or "",
+            specific_topic=specific_topic,
+            topic_focus=topic_focus,
+            scraped_text=audit["cleaned_text"] or "",
+            business_id=business_id,
+        )
 
-        # Append compliance footer if present and not already in body
-        footer = compile_compliance_footer(settings_cache)
-        if footer and footer not in body:
-            body = body + footer
+        # Wrap with greeting, sign-off, and CAN-SPAM compliance footer.
+        body = compose_full_body(core_body, display_name, settings_cache)
 
         # 6. Quality Scoring (evaluated on email body)
         #    Recent drafts are passed in so the engine can catch a batch of
@@ -1245,6 +1287,22 @@ async def generate_draft(req: GenerateDraftRequest):
         )
         recent_bodies = [r["body"] for r in cursor.fetchall()]
         quality = EmailQualityEngine.score_draft(body, previous_bodies=recent_bodies)
+
+        body_valid, body_issues = EmailQualityEngine.validate_body(
+            body,
+            city=city or "",
+            has_website=bool(website_domain),
+        )
+        subj_valid, subj_issues = EmailQualityEngine.validate_subject(
+            subject,
+            business_name=display_name,
+        )
+        if not body_valid:
+            quality["issues"].extend(body_issues)
+            quality["passed"] = False
+        if not subj_valid:
+            quality["issues"].extend(subj_issues)
+            quality["passed"] = False
 
         # 7. Store draft
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1334,12 +1392,21 @@ async def approve_draft(draft_id: str):
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT status FROM email_drafts WHERE id = ?", (draft_id,))
+        cursor.execute("SELECT status, recipient_email FROM email_drafts WHERE id = ?", (draft_id,))
         row = cursor.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Draft not found.")
 
         current_status = row["status"]
+        recip_email = row["recipient_email"] or ""
+        from leadforge.normalizer import is_valid_recipient_email
+        is_valid, err_msg = is_valid_recipient_email(recip_email)
+        if not is_valid:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Cannot approve draft with invalid recipient email: {err_msg}",
+            )
+
         EntityStateMachine.validate_transition(
             entity_type="EmailDraft",
             current_state=current_status,
@@ -1510,15 +1577,23 @@ async def bulk_approve_drafts(req: Optional[BulkApproveRequest] = None):
         min_score = settings_cache.get_int("outreach.min_quality_score", 80)
         require_llm = settings_cache.get_str("outreach.require_llm_hook", "true").lower() in ("true", "1", "yes")
 
-        cols = "id, body, quality_score, quality_passed, quality_issues, hook_source"
+        cols = """
+            ed.id, ed.body, ed.subject, ed.quality_score, ed.quality_passed, ed.quality_issues,
+            ed.hook_source, ed.recipient_email, a.city, b.name as biz_name, b.website_domain
+        """
+        base_query = f"""
+            SELECT {cols}
+            FROM email_drafts ed
+            LEFT JOIN opportunities o ON ed.opportunity_id = o.id
+            LEFT JOIN businesses b ON o.business_id = b.id
+            LEFT JOIN addresses a ON a.business_id = b.id
+            WHERE ed.status = 'PENDING_APPROVAL'
+        """
         if req and req.draft_ids:
             placeholders = ",".join(["?"] * len(req.draft_ids))
-            cursor.execute(
-                f"SELECT {cols} FROM email_drafts WHERE status = 'PENDING_APPROVAL' AND id IN ({placeholders})",
-                req.draft_ids,
-            )
+            cursor.execute(f"{base_query} AND ed.id IN ({placeholders})", req.draft_ids)
         else:
-            cursor.execute(f"SELECT {cols} FROM email_drafts WHERE status = 'PENDING_APPROVAL'")
+            cursor.execute(base_query)
 
         rows = cursor.fetchall()
         approved_count = 0
@@ -1526,14 +1601,20 @@ async def bulk_approve_drafts(req: Optional[BulkApproveRequest] = None):
         approved_bodies: List[str] = []
 
         from leadforge.outreach.quality import EmailQualityEngine
+        from leadforge.normalizer import is_valid_recipient_email
+        from leadforge.outreach.circuit_breaker import validate_draft_content
 
         for row in rows:
             draft_id = row["id"]
             body = row["body"] or ""
             score = row["quality_score"]
+            recip = row["recipient_email"] or ""
             reason = None
 
-            if score is None:
+            is_valid_email, email_err = is_valid_recipient_email(recip)
+            if not is_valid_email:
+                reason = f"malformed recipient email ({email_err})"
+            elif score is None:
                 reason = "no quality score recorded — regenerate this draft before approving"
             elif score < min_score:
                 issues = row["quality_issues"]
@@ -1564,6 +1645,17 @@ async def bulk_approve_drafts(req: Optional[BulkApproveRequest] = None):
                         f"body is {int(ratio * 100)}% identical to another draft in this batch "
                         f'("{clean_offending}...") — held back to prevent repetitive bulk outreach'
                     )
+
+            if not reason:
+                valid_content, content_issues = validate_draft_content(
+                    body=body,
+                    subject=row["subject"] or "",
+                    city=row["city"] or "",
+                    has_website=bool(row["website_domain"]),
+                    business_name=row["biz_name"] or "",
+                )
+                if not valid_content:
+                    reason = f"failed content standards: {'; '.join(content_issues)}"
 
             if reason:
                 skipped.append({"draft_id": draft_id, "reason": reason})
@@ -1663,23 +1755,68 @@ async def retry_draft(draft_id: str):
 
 
 
-def run_delivery_task():
-    """Background helper to execute the SMTP delivery queue."""
+def run_delivery_task(max_sends: Optional[int] = None) -> int:
+    """Helper to execute the SMTP delivery queue."""
     from leadforge.outreach.deliverer import SMTPEmailDeliverer
 
     try:
         deliverer = SMTPEmailDeliverer()
-        sent = deliverer.send_approved_drafts()
-        logger.info(f"Background SMTP delivery finished. Sent: {sent} emails.")
+        sent = deliverer.send_approved_drafts(max_sends=max_sends)
+        logger.info(f"SMTP delivery finished. Sent: {sent} emails.")
+        return sent
     except Exception as e:
-        logger.error(f"Background SMTP delivery error: {str(e)}")
+        logger.error(f"SMTP delivery error: {str(e)}")
+        return 0
 
 
 @app.post("/api/outreach/deliver")
-async def trigger_delivery(background_tasks: BackgroundTasks):
-    """Triggers background sending of all APPROVED email drafts."""
-    background_tasks.add_task(run_delivery_task)
-    return {"message": "SMTP delivery task started in background."}
+async def trigger_delivery(
+    background_tasks: BackgroundTasks,
+    max_sends: Optional[int] = None,
+    wait: bool = False,
+):
+    """Triggers sending of APPROVED email drafts, optionally capped by max_sends.
+
+    If wait=True, executes synchronously and returns the count of sent emails.
+    If wait=False (default), dispatches in the background.
+    """
+    if wait:
+        sent = await asyncio.to_thread(run_delivery_task, max_sends)
+        msg = f"SMTP delivery finished. Sent: {sent} emails."
+        return {"message": msg, "max_sends": max_sends, "sent_count": sent, "sent": sent}
+
+    background_tasks.add_task(run_delivery_task, max_sends)
+    msg = f"SMTP delivery task started in background (capped at {max_sends} sends)." if max_sends else "SMTP delivery task started in background."
+    return {"message": msg, "max_sends": max_sends}
+
+
+@app.get("/api/outreach/circuit-breaker/status")
+async def get_circuit_breaker_status():
+    """Returns current status of the content circuit breaker."""
+    from leadforge.database import get_db_connection
+    from leadforge.outreach.circuit_breaker import is_content_circuit_breaker_tripped
+    from leadforge.repositories.settings import SettingsCache
+
+    conn = get_db_connection()
+    try:
+        tripped, reason = is_content_circuit_breaker_tripped(conn, SettingsCache())
+        return {"tripped": tripped, "reason": reason}
+    finally:
+        conn.close()
+
+
+@app.post("/api/outreach/circuit-breaker/clear")
+async def clear_circuit_breaker():
+    """Clears the tripped content circuit breaker after human review."""
+    from leadforge.database import get_db_connection
+    from leadforge.outreach.circuit_breaker import clear_content_circuit_breaker
+
+    conn = get_db_connection()
+    try:
+        clear_content_circuit_breaker(conn, cleared_by="api_operator")
+        return {"message": "Content circuit breaker cleared successfully."}
+    finally:
+        conn.close()
 
 
 @app.get("/api/outreach/unsubscribe/{business_id}")
@@ -2099,7 +2236,6 @@ async def update_outreach_schedule(req: OutreachScheduleRequest):
         response["message"] = "Schedule saved and applied to systemd timer successfully."
 
     return response
-
 
 
 

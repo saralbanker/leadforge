@@ -1,5 +1,11 @@
 -- WhatsApp-Auto: SQLite Schema for Solo Outreach Management
 
+CREATE TABLE IF NOT EXISTS wa_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    description TEXT
+);
+
 CREATE TABLE IF NOT EXISTS wa_contacts (
     id TEXT PRIMARY KEY,
     company_name TEXT NOT NULL,

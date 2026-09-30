@@ -165,8 +165,11 @@ class TestQueueManagerDeep:
     """Deep verification of Queue Manager database, suppression, and dispatch."""
 
     def test_mark_status_with_automatic_template_resolution(self, tmp_path):
+        from unittest.mock import MagicMock
+        mock_gen = MagicMock()
+        mock_gen.generate_hook_with_source.return_value = ("", "fallback")
         db_path = tmp_path / "test.db"
-        mgr = WhatsAppQueueManager(db_path=db_path)
+        mgr = WhatsAppQueueManager(db_path=db_path, hook_generator=mock_gen)
         conn = mgr._get_connection()
         cur = conn.cursor()
         cur.execute(

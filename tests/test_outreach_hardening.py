@@ -3,6 +3,7 @@ import pytest
 from unittest.mock import patch
 from leadforge.database import get_db_connection, initialize_database, uuidv7
 from leadforge.outreach.deliverer import SMTPEmailDeliverer
+from leadforge.outreach.dry_run import build_dry_run_report
 from leadforge.outreach.generator import compile_compliance_footer
 from leadforge.repositories.settings import SQLiteSettingsRepository, SettingsCache
 
@@ -118,6 +119,54 @@ def test_ph002_daily_send_safety_limit():
     conn.close()
 
 
+def test_ph002_suppression_is_checked_before_smtp_dispatch():
+    """A newly suppressed approved draft must be cancelled without SMTP I/O."""
+    repo = SQLiteSettingsRepository()
+    repo.set("outreach.daily_send_limit", "10")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    biz_id, opp_id, draft_id = uuidv7(), uuidv7(), uuidv7()
+    cursor.execute("INSERT INTO businesses (id, name, normalized_name, is_suppressed) VALUES (?, ?, ?, 1)", (biz_id, "No Contact", "no contact"))
+    cursor.execute("INSERT INTO opportunities (id, business_id, title, score, pipeline_stage) VALUES (?, ?, ?, 75, 'QUALIFICATION')", (opp_id, biz_id, "No send"))
+    cursor.execute("INSERT INTO email_drafts (id, opportunity_id, campaign_name, recipient_email, subject, body, status) VALUES (?, ?, ?, ?, ?, ?, 'APPROVED')", (draft_id, opp_id, "Test", "stop@example.com", "Subject", "Body"))
+    conn.commit()
+    conn.close()
+
+    deliverer = SMTPEmailDeliverer()
+    with patch.object(deliverer, "send_email") as send_email:
+        assert deliverer.send_approved_drafts() == 0
+        send_email.assert_not_called()
+
+    conn = get_db_connection()
+    row = conn.execute("SELECT status, error_message FROM email_drafts WHERE id = ?", (draft_id,)).fetchone()
+    conn.close()
+    assert row["status"] == "CANCELLED"
+    assert row["error_message"] == "Recipient suppressed before dispatch"
+
+
+def test_pre_send_dry_run_reports_eligibility_without_sending(monkeypatch):
+    repo = SQLiteSettingsRepository()
+    repo.set("outreach.daily_send_limit", "2")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    biz_id, opp_id, draft_id = uuidv7(), uuidv7(), uuidv7()
+    cursor.execute("INSERT INTO businesses (id, name, normalized_name) VALUES (?, ?, ?)", (biz_id, "Dry Run", "dry run"))
+    cursor.execute("INSERT INTO opportunities (id, business_id, title, score, pipeline_stage) VALUES (?, ?, ?, 75, 'QUALIFICATION')", (opp_id, biz_id, "Dry run"))
+    cursor.execute("INSERT INTO email_drafts (id, opportunity_id, campaign_name, recipient_email, subject, body, status) VALUES (?, ?, ?, ?, ?, ?, 'APPROVED')", (draft_id, opp_id, "Test", "ready@example.com", "Subject", "Body"))
+    conn.commit()
+    conn.close()
+
+    async def mx_ok(self, domain):
+        return domain == "example.com"
+
+    monkeypatch.setattr("leadforge.enrichment.aggregator.EmailCandidateAggregator._check_domain_has_mx", mx_ok)
+    report = __import__("asyncio").run(build_dry_run_report([draft_id]))
+    assert report["approved"] == 1
+    assert report["mx_pass"] == 1
+    assert report["eligible"] == 1
+    assert report["effective_send_count"] == 1
+    assert get_db_connection().execute("SELECT status FROM email_drafts WHERE id = ?", (draft_id,)).fetchone()["status"] == "APPROVED"
+
 def test_ph003_compliance_footer_compilation():
     """PH-003: Verifies compliance footer is built dynamically from settings."""
     repo = SQLiteSettingsRepository()
@@ -151,3 +200,59 @@ def test_ph004_delivery_metrics_endpoint():
     assert "daily_send_limit" in data
     assert isinstance(data["sent_today"], int)
     assert isinstance(data["daily_send_limit"], int)
+
+
+def test_opt_out_suppression_prevents_draft_generation_via_table_and_business():
+    """Suppressed businesses and unsubscribed email addresses reject draft generation before Ollama hook generation."""
+    from fastapi.testclient import TestClient
+    from leadforge.server import app
+
+    client = TestClient(app)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # A category matching the sole active manufacturer campaign is required
+    # so routing succeeds and the opt-out check (which runs AFTER routing in
+    # generate_draft) is what actually gets exercised - otherwise a business
+    # with no matching category 422s on "No campaign matches" first.
+    bt_id = uuidv7()
+    cursor.execute("INSERT OR IGNORE INTO business_types (id, name) VALUES (?, 'Manufacturers')", (bt_id,))
+    cursor.execute("SELECT id FROM business_types WHERE name = 'Manufacturers'")
+    bt_id = cursor.fetchone()[0]
+
+    b_id1 = uuidv7()
+    opp_id1 = uuidv7()
+    cursor.execute(
+        "INSERT INTO businesses (id, name, normalized_name, contact_email, is_suppressed, business_type_id) VALUES (?, ?, ?, ?, 1, ?)",
+        (b_id1, "Suppressed Direct", "suppressed direct", "optout1@example.com", bt_id),
+    )
+    cursor.execute(
+        "INSERT INTO opportunities (id, business_id, title, score, pipeline_stage) VALUES (?, ?, ?, 75, 'QUALIFICATION')",
+        (opp_id1, b_id1, "Opp 1"),
+    )
+
+    b_id2 = uuidv7()
+    opp_id2 = uuidv7()
+    cursor.execute(
+        "INSERT INTO businesses (id, name, normalized_name, contact_email, is_suppressed, business_type_id) VALUES (?, ?, ?, ?, 0, ?)",
+        (b_id2, "Suppressed In Table", "suppressed in table", "unsub2@example.com", bt_id),
+    )
+    cursor.execute(
+        "INSERT INTO opportunities (id, business_id, title, score, pipeline_stage) VALUES (?, ?, ?, 75, 'QUALIFICATION')",
+        (opp_id2, b_id2, "Opp 2"),
+    )
+    cursor.execute(
+        "INSERT OR IGNORE INTO unsubscribe_suppressions (id, email, reason, created_at) VALUES (?, ?, 'User opt-out', '2026-09-20T00:00:00Z')",
+        (uuidv7(), "unsub2@example.com"),
+    )
+    conn.commit()
+    conn.close()
+
+    res1 = client.post("/api/outreach/drafts/generate", json={"opportunity_id": opp_id1})
+    assert res1.status_code == 422
+    assert "Opt-Out Guard" in res1.json()["detail"]
+
+    res2 = client.post("/api/outreach/drafts/generate", json={"opportunity_id": opp_id2})
+    assert res2.status_code == 422
+    assert "Opt-Out Guard" in res2.json()["detail"]
+

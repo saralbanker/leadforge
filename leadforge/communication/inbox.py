@@ -9,7 +9,7 @@ from email.utils import parseaddr
 from typing import Any, Dict, List, Optional, Tuple
 
 from leadforge.communication.base import CommunicationMessage
-from leadforge.communication.classifier import LLMReplyClassifier, VALID_CLASSIFICATIONS
+from leadforge.communication.classifier import LLMReplyClassifier, VALID_CLASSIFICATIONS, classify_bounce_severity
 from leadforge.communication.optout import OptOutManager
 from leadforge.communication.repository import SQLiteCommunicationRepository
 from leadforge.database import append_event, get_db_connection
@@ -469,38 +469,45 @@ class IMAPInboxMonitor:
 
         elif label == "BOUNCE":
             # Record it so bounce_rate in ramp.py counts it (done via classification_label = 'BOUNCE')
-            # Clear the dead address off the business so it is not retried
             dead_addr = bounced_email or sender_email
+            severity = classify_bounce_severity(f"{msg.subject or ''}\n{msg.body_text or ''}")
             conn = get_db_connection()
             try:
                 cursor = conn.cursor()
-                cursor.execute(
-                    "UPDATE businesses SET contact_email = NULL, updated_at = ? WHERE id = ?",
-                    (now_str, business_id),
-                )
-                # Cancel pending/approved drafts for this dead address
-                cursor.execute(
-                    """
-                    UPDATE email_drafts
-                    SET status = 'CANCELLED', error_message = 'Bounced address cleared and suppressed', updated_at = ?
-                    WHERE opportunity_id IN (SELECT id FROM opportunities WHERE business_id = ?)
-                      AND status IN ('PENDING_APPROVAL', 'APPROVED')
-                    """,
-                    (now_str, business_id),
-                )
+                if severity == "hard":
+                    # The address itself is invalid (5.x.x / user unknown /
+                    # does not exist) - clear it so it is never retried, and
+                    # cancel anything still queued against it.
+                    cursor.execute(
+                        "UPDATE businesses SET contact_email = NULL, updated_at = ? WHERE id = ?",
+                        (now_str, business_id),
+                    )
+                    cursor.execute(
+                        """
+                        UPDATE email_drafts
+                        SET status = 'CANCELLED', error_message = 'Bounced address cleared and suppressed', updated_at = ?
+                        WHERE opportunity_id IN (SELECT id FROM opportunities WHERE business_id = ?)
+                          AND status IN ('PENDING_APPROVAL', 'APPROVED')
+                        """,
+                        (now_str, business_id),
+                    )
+                # Soft bounces (4.x.x / mailbox full / deferred) are temporary:
+                # the address may still be good, so it is left in place and
+                # nothing queued against it is cancelled - only recorded.
                 append_event(
                     event_type="EMAIL_BOUNCED",
                     entity_type="Business",
                     entity_id=business_id,
-                    payload={"dead_address": dead_addr, "thread_id": target_thread_id},
+                    payload={"dead_address": dead_addr, "thread_id": target_thread_id, "severity": severity},
                     conn=conn,
                 )
                 conn.commit()
             finally:
                 conn.close()
 
-            # Attempt thread state transition to FAILED
-            if thread.current_state != "FAILED":
+            # Only a hard bounce is terminal for the thread; a soft bounce may
+            # still be delivered on retry, so the thread stays active.
+            if severity == "hard" and thread.current_state != "FAILED":
                 try:
                     self.repo.update_thread_state(target_thread_id, "FAILED")
                 except Exception:
